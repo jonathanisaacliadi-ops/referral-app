@@ -6,12 +6,11 @@ from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler 
+from sklearn.preprocessing import StandardScaler # Import Standardisasi
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 import os
-import sys # Ditambahkan untuk logging
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -127,23 +126,21 @@ def preprocess_data(df):
 # --- 4. Pelatihan Model ---
 @st.cache_resource
 def train_medical_model(df_processed):
-    # Inisialisasi H2O
     try:
+        # Inisialisasi H2O hanya jika belum diinisialisasi
         if not h2o.connection().is_running():
-             h2o.init(max_mem_size='400M', nthreads=1, verbose=False) 
-    except Exception as e:
-        print(f"H2O INIT FAILED: {e}", file=sys.stderr)
-        return None, None, None, None, None 
+             h2o.init(max_mem_size='400M', nthreads=1) 
+    except:
+        return None, None, None, None, None # Menambahkan scaler ke nilai kembali
 
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
-    # Train-Test Split dengan penanganan error stratify
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    except ValueError as e:
-         print(f"TRAIN/TEST SPLIT FAILED (Data Skew): {e}", file=sys.stderr)
-         return None, None, None, None, None
+    except ValueError:
+         # Menangani kegagalan stratify (mis. kelas terlalu sedikit)
+        return None, None, None, None, None
 
     train_pd = pd.concat([X_train, y_train], axis=1)
     test_pd = pd.concat([X_test, y_test], axis=1)
@@ -156,12 +153,11 @@ def train_medical_model(df_processed):
     
     hf_train[y_col] = hf_train[y_col].asfactor()
     
-    # AutoML Configuration
     aml = H2OAutoML(
         max_models=3, 
         seed=42, 
         include_algos=['GBM'], 
-        max_runtime_secs=120, # Ditingkatkan menjadi 120 detik
+        max_runtime_secs=120, # Ditingkatkan ke 120 detik untuk stabilitas
         verbosity='error',
         balance_classes=True
     ) 
@@ -169,37 +165,33 @@ def train_medical_model(df_processed):
     try:
         aml.train(x=x_cols, y=y_col, training_frame=hf_train)
         best_model = aml.leader
-    except Exception as e: 
-        print(f"H2O TRAINING FAILED: {e}", file=sys.stderr)
-        return None, None, None, None, None 
+    except: 
+        return None, None, None, None, None
     
     # Pastikan model leader ada sebelum memanggil predict
     if best_model is None:
-        print("H2O AutoML did not find a leader model.", file=sys.stderr)
         return None, None, None, None, None
-
+        
     s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
     s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
     
     X_train['ML_Score'] = s_train
     X_test['ML_Score'] = s_test
     
-    # --- Standardisasi Fitur Numerik untuk LogReg ---
+    # --- PERUBAHAN UTAMA: Standardisasi Fitur Numerik untuk LogReg ---
     scaler = StandardScaler()
     
+    # Identifikasi kolom yang akan diskalakan
     cols_to_scale = list(X_train.columns) 
     
-    # Pelatihan Scaler dan Transformasi
-    try:
-        X_train_scaled = scaler.fit_transform(X_train[cols_to_scale])
-        X_train_scaled = pd.DataFrame(X_train_scaled, index=X_train.index, columns=cols_to_scale)
-        
-        X_test_scaled = scaler.transform(X_test[cols_to_scale])
-        X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
-    except Exception as e:
-        print(f"SCALING FAILED: {e}", file=sys.stderr)
-        return None, None, None, None, None
-
+    # Latih scaler pada data train dan transformasikan
+    X_train_scaled = scaler.fit_transform(X_train[cols_to_scale])
+    X_train_scaled = pd.DataFrame(X_train_scaled, index=X_train.index, columns=cols_to_scale)
+    
+    # Transformasikan data test menggunakan scaler yang sama
+    X_test_scaled = scaler.transform(X_test[cols_to_scale])
+    X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
+    
     # Latih Regresi Logistik pada data yang diskalakan
     log_reg = LogisticRegression(penalty='l2', C=0.2, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_scaled, y_train)
@@ -218,6 +210,7 @@ def train_medical_model(df_processed):
     for i, col in enumerate(cols_to_scale):
         coeffs[col] = log_reg.coef_[0][i]
         
+    # Mengembalikan scaler bersama dengan model dan metrik
     return best_model, log_reg, coeffs, metrics, scaler
 
 # --- 5. Kalkulasi ---
@@ -234,6 +227,7 @@ def calculate_final_prob(input_dict, ml_score, coeffs, scaler):
     input_scaled = pd.DataFrame(input_scaled, index=input_df.index, columns=cols_to_scale)
     
     # Hitung logit menggunakan koefisien dan data yang diskalakan
+    # Intercept di sini adalah log-odds pada nilai rata-rata (0 setelah scaling)
     logit = coeffs['Intercept']
     for feat in cols_to_scale:
         if feat in coeffs:
@@ -252,26 +246,21 @@ if not df_raw.empty:
     # Train Model (Hidden Spinner)
     if 'metrics' not in st.session_state:
         with st.spinner("Memproses Model AI & Standar NEWS2..."):
-            # Menerima nilai balik baru (scaler)
+            # Menerima 5 nilai balik
             gbm, logreg, coef, metr, sc = train_medical_model(df_model)
             st.session_state.gbm = gbm
             st.session_state.logreg = logreg
             st.session_state.coef = coef
             st.session_state.metrics = metr
             st.session_state.scaler = sc # Simpan scaler
-            # Model siap hanya jika GBM berhasil dilatih (tidak None)
             st.session_state.model_ready = (gbm is not None)
 
-    # Pengecekan status model (sesuai permintaan, tanpa fallback kustom)
-    # Ini akan terpicu jika gbm adalah None (Pelatihan Gagal)
+    # Pengecekan status model (Ini akan menangani kasus di mana gbm adalah None)
     if not st.session_state.get('model_ready'):
-        # Memeriksa apakah df_raw kosong, karena itu akan memicu pesan error yang lebih spesifik
         if df_raw.empty:
-             # st.error sudah dipanggil di load_fixed_dataset
              pass
         else:
             st.error("Gagal memuat atau melatih Model Triage AI. Mohon periksa file data (`disease_diagnosis.csv`), koneksi H2O, atau logs konsol untuk detail kesalahan.")
-        # Hentikan eksekusi UI utama jika model gagal dimuat/dilatih
         st.stop()
         
     # --- UI UTAMA ---
