@@ -49,7 +49,6 @@ def extract_features_from_symptoms(row_or_list):
     text_sym = " ".join(symptoms_list)
     return {
         'Sym_Dyspnea': 1 if 'breath' in text_sym or 'shortness' in text_sym else 0,
-        'Sym_ChestPain': 1 if 'chest' in text_sym and 'pain' in text_sym else 0,
         'Sym_Fever': 1 if 'fever' in text_sym else 0
     }
 
@@ -119,7 +118,7 @@ def preprocess_data(df):
         'Age', 'NEWS2_Score', 
         'Sys_Raw', 'Dia_Raw', 'Oxygen_Raw', 'Temp_Raw', 'Heart_Raw',
         'Flag_HTN_Crisis',
-        'Sym_Dyspnea', 'Sym_ChestPain', 'Sym_Fever',
+        'Sym_Dyspnea', 'Sym_Fever',
         'Referral_Required'
     ]]
 
@@ -267,7 +266,6 @@ if not df_raw.empty:
                 'Oxygen_Raw': p_o2, 'Temp_Raw': p_temp, 'Heart_Raw': p_hr,
                 'Flag_HTN_Crisis': 1 if p_sys >= 180 else 0,
                 'Sym_Dyspnea': flags['Sym_Dyspnea'],
-                'Sym_ChestPain': flags['Sym_ChestPain'],
                 'Sym_Fever': flags['Sym_Fever']
             }
             
@@ -316,7 +314,6 @@ if not df_raw.empty:
             'Heart_Raw': 'Detak Jantung (Heart_Raw)',
             'Flag_HTN_Crisis': 'Indikator Krisis Hipertensi (Flag_HTN_Crisis)',
             'Sym_Dyspnea': 'Gejala Sesak Napas (Sym_Dyspnea)',
-            'Sym_ChestPain': 'Gejala Nyeri Dada (Sym_ChestPain)',
             'Sym_Fever': 'Gejala Demam (Sym_Fever)',
             'ML_Score': 'Skor Prediksi AI (ML_Score)'
         }
