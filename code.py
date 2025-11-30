@@ -11,37 +11,12 @@ import seaborn as sns
 import math
 import os
 
-# --- 1. Konfigurasi Halaman & CSS Kustom ---
+# --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (Blue Theme)",
-    page_icon="🩺",
+    page_title="Sistem Triage Medis & Rujukan Klinis",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# CSS untuk memaksa Background Putih dan Elemen Biru
-st.markdown("""
-    <style>
-    /* Paksa Background Putih */
-    .stApp {
-        background-color: #FFFFFF;
-    }
-    
-    /* Mengubah warna tombol primary menjadi biru */
-    div.stButton > button:first-child {
-        background-color: #0068C9;
-        color: white;
-        border: none;
-    }
-    
-    /* Kustomisasi Kotak Hasil agar lebih rapi */
-    .result-box {
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-    </style>
-""", unsafe_allow_html=True)
 
 # --- 2. Fungsi Load Data ---
 @st.cache_data
@@ -124,7 +99,6 @@ def calculate_news2_score_strict(row):
 def preprocess_data(df):
     processed = df.copy()
     
-    # Parsing BP
     bp_split = processed['Blood_Pressure_mmHg'].astype(str).str.split('/', expand=True)
     processed['Sys_Raw'] = pd.to_numeric(bp_split[0], errors='coerce').fillna(120)
     if bp_split.shape[1] > 1:
@@ -132,23 +106,17 @@ def preprocess_data(df):
     else:
         processed['Dia_Raw'] = 80
 
-    # Raw Vitals
     processed['Oxygen_Raw'] = pd.to_numeric(processed['Oxygen_Saturation_%'], errors='coerce').fillna(98)
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
-    # NEWS2 Score
     processed['NEWS2_Score'] = processed.apply(calculate_news2_score_strict, axis=1)
-    
-    # Flag HTN Crisis (AHA Guideline)
     processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
     
-    # Gejala
     flags = processed.apply(extract_features_from_symptoms, axis=1)
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    # Target
     processed['Referral_Required'] = processed.apply(
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
@@ -238,14 +206,9 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
 df_raw = load_fixed_dataset()
 
 if not df_raw.empty:
-    s1_options = get_column_options(df_raw, 'Symptom_1')
-    s2_options = ["-"] + get_column_options(df_raw, 'Symptom_2')
-    s3_options = ["-"] + get_column_options(df_raw, 'Symptom_3')
-    
     df_model = preprocess_data(df_raw)
-
-    # Spinner juga kita buat biru di st.markdown css, tapi default streamlit sudah cukup netral
-    if 'metrics' not in st.session_state:
+    
+    if 'model_ready' not in st.session_state:
         with st.spinner("Menginisialisasi Model Medis (NEWS2)..."):
             gbm, logreg, coef, metr = train_medical_model(df_model)
             st.session_state.gbm = gbm
@@ -274,6 +237,10 @@ if not df_raw.empty:
                 p_o2 = st.number_input("Saturasi Oksigen (%)", 50, 100, 98)
 
             st.write("**Keluhan & Gejala**")
+            s1_options = get_column_options(df_raw, 'Symptom_1')
+            s2_options = ["-"] + get_column_options(df_raw, 'Symptom_2')
+            s3_options = ["-"] + get_column_options(df_raw, 'Symptom_3')
+            
             sc1, sc2, sc3 = st.columns(3)
             with sc1: p_sym1 = st.selectbox("Gejala 1", options=s1_options)
             with sc2: p_sym2 = st.selectbox("Gejala 2", options=s2_options)
@@ -285,7 +252,6 @@ if not df_raw.empty:
         st.subheader("📋 Hasil Analisis")
         
         if submit_btn and st.session_state.get('model_ready'):
-            # Parsing
             try:
                 if '/' in p_bp: p_sys, p_dia = map(float, p_bp.split('/'))
                 else: p_sys, p_dia = 120.0, 80.0
@@ -294,14 +260,12 @@ if not df_raw.empty:
             valid_symptoms = [s for s in [p_sym1, p_sym2, p_sym3] if s != "-"]
             flags = extract_features_from_symptoms(valid_symptoms)
             
-            # NEWS2 Calculation
             row_dummy = {
                 'Heart_Rate_bpm': p_hr, 'Body_Temperature_C': p_temp, 
                 'Oxygen_Saturation_%': p_o2, 'Sys_Raw': p_sys, 'Dia_Raw': p_dia
             }
             p_news2 = calculate_news2_score_strict(row_dummy)
             
-            # Prediction
             input_dict = {
                 'Age': p_age, 'NEWS2_Score': p_news2,
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
@@ -326,34 +290,15 @@ if not df_raw.empty:
             k3.metric("Risiko Rujukan", f"{final_prob:.1%}")
             
             threshold = 0.65
-            
-            # --- LOGIKA TAMPILAN BIRU (MENGGANTIKAN ST.ERROR MERAH) ---
             if final_prob > threshold:
-                # Menggunakan HTML khusus untuk membuat kotak Biru (Alert)
-                alert_html = f"""
-                <div style="background-color: #0068C9; color: white; padding: 15px; border-radius: 10px; margin-bottom: 10px;">
-                    <h3 style="margin:0; color: white;">🚨 RUJUKAN DIPERLUKAN</h3>
-                    <p>Probabilitas rujukan <strong>{final_prob:.1%}</strong> melebihi ambang batas risiko.</p>
-                </div>
-                """
-                st.markdown(alert_html, unsafe_allow_html=True)
-                
-                # Menampilkan alasan
-                st.write("**Indikasi Klinis (Penyebab):**")
+                st.error(f"**RUJUKAN DIPERLUKAN**")
+                st.write("**Indikasi Klinis:**")
                 if p_news2 >= 5: st.warning(f"- Skor NEWS2 {p_news2} (Bahaya Klinis Akut)")
                 if p_sys <= 90: st.warning("- Hipotensi (Risiko Syok)")
                 if p_o2 <= 91: st.warning("- Hipoksia Berat")
                 if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
-                
             else:
-                # Kotak Hijau/Biru Muda untuk kondisi Aman
-                safe_html = f"""
-                <div style="background-color: #E6F3FF; color: #0068C9; padding: 15px; border-radius: 10px; border: 1px solid #0068C9; margin-bottom: 10px;">
-                    <h3 style="margin:0; color: #0068C9;">✅ TIDAK PERLU RUJUKAN</h3>
-                    <p>Probabilitas rujukan <strong>{final_prob:.1%}</strong>. Pasien stabil.</p>
-                </div>
-                """
-                st.markdown(safe_html, unsafe_allow_html=True)
+                st.success("**TIDAK PERLU RUJUKAN**")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
         else:
             st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
@@ -361,12 +306,12 @@ if not df_raw.empty:
     # --- FOOTER: DETAIL MODEL ---
     st.markdown("---")
     with st.expander("🔍 Detail Model, Rumus & Data (Klik untuk membuka)", expanded=False):
-        tab1, tab2, tab3 = st.tabs(["📊 Performa & Metrik", "🧮 Rumus & Bobot", "💾 Dataset"])
+        tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
         
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
 
-        # Mapping Translator
+        # --- MAPPING NAMA VARIABEL (TRANSLATOR) ---
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
             'Age': 'Usia Pasien (Age)',
@@ -389,8 +334,7 @@ if not df_raw.empty:
                 with c1:
                     st.metric("Skor AUC (Akurasi)", f"{metrics['auc']:.4f}")
                     fig, ax = plt.subplots(figsize=(4, 3))
-                    # MENGUBAH WARNA PLOT MENJADI BIRU (SESUAI PERMINTAAN)
-                    ax.plot(metrics['fpr'], metrics['tpr'], color='#0068C9', lw=2) # Biru
+                    ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
                     ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
                     ax.set_title('ROC Curve')
                     st.pyplot(fig)
@@ -402,21 +346,32 @@ if not df_raw.empty:
 
         with tab2:
             if coeffs:
-                st.markdown("#### Bobot Variabel ($\beta_i$)")
+                st.markdown("#### Bobot Variabel (Beta(i))")
+                st.caption("Faktor yang paling mempengaruhi keputusan AI.")
+                
+                # Buat DataFrame
                 coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
+                
+                # Filter Intercept agar grafik lebih rapi
                 plot_df = coef_df.drop('Intercept')
+                
+                # Ganti nama Index menggunakan Mapping
                 plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
+                
+                # Sortir
                 plot_df = plot_df.sort_values(by='Bobot', ascending=False)
                 
-                # Menggunakan warna biru untuk bar chart
-                st.bar_chart(plot_df, color="#0068C9")
+                # Tampilkan Grafik
+                st.bar_chart(plot_df)
                 
+                # Tampilkan Tabel
+                # Mapping ulang untuk tabel lengkap (termasuk intercept jika mau)
                 coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
                 st.dataframe(coef_df.style.format("{:.4f}"))
 
         with tab3:
             st.markdown(f"**Total Data:** {len(df_raw)} Pasien")
-            st.dataframe(df_raw.head(20))
+            st.dataframe(df_raw)
 
 else:
     st.error("Gagal memulai aplikasi.")
