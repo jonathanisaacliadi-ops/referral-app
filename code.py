@@ -6,12 +6,13 @@ from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler # Import Standardisasi
+from sklearn.preprocessing import StandardScaler # DITAMBAHKAN
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 import os
-import sys # Ditambahkan untuk logging yang lebih baik
+import sys 
+import time 
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -129,11 +130,16 @@ def preprocess_data(df):
 def train_medical_model(df_processed):
     # Inisialisasi H2O
     try:
-        if not h2o.connection().is_running():
-             h2o.init(max_mem_size='400M', nthreads=1) 
+        # Matikan kluster H2O yang ada untuk mencegah konflik cache Streamlit/H2O
+        if h2o.connection().is_running():
+            h2o.cluster().shutdown(prompt=False)
+            time.sleep(1)
+            
+        h2o.init(max_mem_size='400M', nthreads=1) 
     except Exception as e:
         print(f"ERROR: H2O Initialization Failed: {e}", file=sys.stderr)
-        return None, None, None, None, None 
+        # Mengembalikan 4 None, sesuai signature asli (tanpa scaler)
+        return None, None, None, None 
 
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
@@ -143,7 +149,7 @@ def train_medical_model(df_processed):
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     except ValueError as e:
          print(f"ERROR: Train/Test Split Failed (Check data skew): {e}", file=sys.stderr)
-         return None, None, None, None, None
+         return None, None, None, None
 
     train_pd = pd.concat([X_train, y_train], axis=1)
     test_pd = pd.concat([X_test, y_test], axis=1)
@@ -161,7 +167,7 @@ def train_medical_model(df_processed):
         max_models=3, 
         seed=42, 
         include_algos=['GBM'], 
-        max_runtime_secs=120, # Ditingkatkan ke 120 detik untuk stabilitas
+        max_runtime_secs=120, 
         verbosity='error',
         balance_classes=True
     ) 
@@ -171,12 +177,11 @@ def train_medical_model(df_processed):
         best_model = aml.leader
     except Exception as e: 
         print(f"ERROR: H2O AutoML Training Failed: {e}", file=sys.stderr)
-        return None, None, None, None, None
+        return None, None, None, None
     
-    # Pastikan model leader ada sebelum memanggil predict
     if best_model is None:
         print("ERROR: H2O AutoML did not find a leader model.", file=sys.stderr)
-        return None, None, None, None, None
+        return None, None, None, None
 
     # Menggunakan predict pada hf_train dan hf_test untuk mendapatkan ML_Score
     try:
@@ -184,12 +189,12 @@ def train_medical_model(df_processed):
         s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
     except Exception as e:
         print(f"ERROR: H2O Prediction Failed: {e}", file=sys.stderr)
-        return None, None, None, None, None
+        return None, None, None, None
     
     X_train['ML_Score'] = s_train
     X_test['ML_Score'] = s_test
     
-    # --- Standardisasi Fitur Numerik untuk LogReg ---
+    # --- IMPLEMENTASI STANDARDISASI ---
     scaler = StandardScaler()
     
     cols_to_scale = list(X_train.columns) 
@@ -203,8 +208,8 @@ def train_medical_model(df_processed):
         X_test_scaled = scaler.transform(X_test[cols_to_scale])
         X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
     except Exception as e:
-        print(f"ERROR: SCALING FAILED (Check zero variance columns): {e}", file=sys.stderr)
-        return None, None, None, None, None
+        print(f"ERROR: SCALING FAILED: {e}", file=sys.stderr)
+        return None, None, None, None
 
     # Latih Regresi Logistik pada data yang diskalakan
     log_reg = LogisticRegression(penalty='l2', C=0.2, solver='lbfgs', max_iter=2000, random_state=42)
@@ -224,15 +229,26 @@ def train_medical_model(df_processed):
     for i, col in enumerate(cols_to_scale):
         coeffs[col] = log_reg.coef_[0][i]
         
-    # Mengembalikan scaler bersama dengan model dan metrik
-    return best_model, log_reg, coeffs, metrics, scaler
+    # KUNCI PERBAIKAN: Masukkan objek scaler ke dalam dictionary coeffs
+    # Ini menjaga jumlah nilai return (4) tetapi menyediakan scaler.
+    coeffs['feature_scaler'] = scaler 
+        
+    # Mengembalikan 4 nilai sesuai signature asli
+    return best_model, log_reg, coeffs, metrics
 
 # --- 5. Kalkulasi ---
-def calculate_final_prob(input_dict, ml_score, coeffs, scaler):
+# Menghapus 'scaler' dari argumen karena diambil dari 'coeffs'
+def calculate_final_prob(input_dict, ml_score, coeffs):
     
+    # AMBIL SCALER DARI DICTIONARY COEFFS
+    scaler = coeffs.get('feature_scaler')
+    if scaler is None:
+         # Fallback jika scaler hilang (seharusnya tidak terjadi)
+         return 0.5 
+
     # Buat DataFrame input untuk skalasi
     input_df = pd.DataFrame([input_dict])
-    input_df['ML_Score'] = ml_score # Tambahkan skor AI
+    input_df['ML_Score'] = ml_score 
     
     cols_to_scale = list(input_df.columns)
     
@@ -259,22 +275,21 @@ if not df_raw.empty:
     # Train Model (Hidden Spinner)
     if 'metrics' not in st.session_state:
         with st.spinner("Memproses Model AI & Standar NEWS2..."):
-            # Menerima 5 nilai balik
-            gbm, logreg, coef, metr, sc = train_medical_model(df_model)
+            # Menerima 4 nilai balik (sesuai signature asli)
+            gbm, logreg, coef, metr = train_medical_model(df_model)
             st.session_state.gbm = gbm
             st.session_state.logreg = logreg
             st.session_state.coef = coef
             st.session_state.metrics = metr
-            st.session_state.scaler = sc # Simpan scaler
+            # Model siap hanya jika GBM berhasil dilatih (tidak None)
             st.session_state.model_ready = (gbm is not None)
 
-    # Pengecekan status model (Ini akan menangani kasus di mana gbm adalah None)
+    # Pengecekan status model (Error handling)
     if not st.session_state.get('model_ready'):
         if df_raw.empty:
              pass
         else:
-            # Pesan error di UI, namun sekarang disertai log detail di konsol
-            st.error("Gagal memuat atau melatih Model Triage AI. Mohon periksa file data (`disease_diagnosis.csv`), koneksi H2O, atau logs konsol untuk detail kesalahan.")
+            st.error("Gagal memuat atau melatih Model Triage AI. Mohon periksa file data (`disease_diagnosis.csv`), atau logs konsol untuk detail kesalahan.")
         st.stop()
         
     # --- UI UTAMA ---
@@ -343,8 +358,8 @@ if not df_raw.empty:
             ml_pred = st.session_state.gbm.predict(hf_sample)
             s_score = ml_pred['p1'].as_data_frame().values[0][0]
                 
-            # Kalkulasi probabilitas akhir menggunakan scaler dan koefisien yang berhasil dilatih
-            final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef, st.session_state.scaler)
+            # Kalkulasi probabilitas akhir. Coefs sekarang membawa scaler.
+            final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef)
             
             k1, k2, k3 = st.columns(3)
             k1.metric("NEWS2 Score", f"{p_news2}")
@@ -371,7 +386,11 @@ if not df_raw.empty:
         tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
         
         metrics = st.session_state.get('metrics')
-        coeffs = st.session_state.get('coef')
+        coeffs = st.session_state.get('coef').copy() # Salin untuk membuang scaler di plot
+        
+        # Hapus scaler dari dictionary untuk tujuan tampilan
+        if 'feature_scaler' in coeffs:
+            coeffs.pop('feature_scaler')
 
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
@@ -418,7 +437,7 @@ if not df_raw.empty:
         with tab2:
             if coeffs:
                 st.markdown("#### Bobot Variabel")
-                # Intercept yang sudah dinormalisasi kini akan lebih mudah diinterpretasikan
+                # Intercept yang sudah dinormalisasi kini akan mudah diinterpretasikan
                 coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
                 plot_df = coef_df.drop('Intercept')
                 plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
