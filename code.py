@@ -345,49 +345,72 @@ if not df_raw.empty:
         elif not st.session_state.get('model_ready'):
              st.info("Model sedang dimuat atau gagal diinisialisasi.")
 
-    # --- MENU BAWAH (Detail & Safety Check) ---
+    # --- MENU BAWAH (COLLAPSIBLE) ---
     st.markdown("---")
-    with st.expander("Detail Model & Bobot (Scaled)", expanded=False):
-        tab1, tab2 = st.tabs(["Performa", "Bobot Variabel"])
+    with st.expander("Detail Model, Rumus & Data", expanded=False):
+        tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
         
-        # Ambil data dari session state dengan aman (.get)
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
-        
+
+        variable_map = {
+            'Intercept': 'Intercept (Nilai Dasar)',
+            'Age': 'Usia Pasien (Age)',
+            'NEWS2_Score': 'Skor Peringatan Dini (NEWS2_Score)',
+            'Sys_Raw': 'Tekanan Darah Sistolik (Sys_Raw)',
+            'Dia_Raw': 'Tekanan Darah Diastolik (Dia_Raw)',
+            'Oxygen_Raw': 'Saturasi Oksigen (Oxygen_Raw)',
+            'Temp_Raw': 'Suhu Tubuh (Temp_Raw)',
+            'Heart_Raw': 'Detak Jantung (Heart_Raw)',
+            'Flag_HTN_Crisis': 'Indikator Krisis Hipertensi (Flag_HTN_Crisis)',
+            'Sym_Dyspnea': 'Gejala Sesak Napas (Sym_Dyspnea)',
+            'Sym_Fever': 'Gejala Demam (Sym_Fever)',
+            'ML_Score': 'Skor Prediksi AI (ML_Score)'
+        }
+
         with tab1:
-            # SAFETY CHECK: Pastikan metrics ada dan berbentuk dict
-            if metrics is not None and isinstance(metrics, dict):
-                auc_score = metrics.get('auc', 0)
-                st.metric("AUC Score", f"{auc_score:.4f}")
-                
-                col_g1, col_g2 = st.columns(2)
-                with col_g1:
-                    if 'fpr' in metrics and 'tpr' in metrics:
-                        fig, ax = plt.subplots(figsize=(4, 3))
-                        ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
-                        ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
-                        ax.set_title('ROC Curve')
-                        st.pyplot(fig)
-                
-                with col_g2:
-                    if 'cm' in metrics:
-                        st.write("Confusion Matrix:")
-                        cm = metrics['cm']
-                        fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
-                        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=ax_cm)
-                        ax_cm.set_xlabel('Prediksi')
-                        ax_cm.set_ylabel('Aktual')
-                        st.pyplot(fig_cm)
-            else:
-                st.info("Metrik belum tersedia. Latih model terlebih dahulu.")
-        
+            if metrics:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.metric("Skor AUC", f"{metrics['auc']:.4f}")
+                    fig, ax = plt.subplots(figsize=(4, 3))
+                    ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
+                    ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+                    ax.set_title('ROC Curve')
+                    st.pyplot(fig)
+                with c2:
+                    st.write("Confusion Matrix:")
+                    cm = metrics['cm']
+                    
+                    # VARIABLE LABEL UNTUK KOTAK
+                    group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
+                    group_counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
+                    
+                    labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
+                    labels = np.asarray(labels).reshape(2,2)
+                    
+                    fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
+                    sns.heatmap(cm, annot=labels, fmt='', cmap='Blues', cbar=False, ax=ax_cm)
+                    ax_cm.set_xlabel('Prediksi Model')
+                    ax_cm.set_ylabel('Data Aktual')
+                    st.pyplot(fig_cm)
+
         with tab2:
             if coeffs:
-                st.write("Bobot variabel setelah standarisasi data (Intercept mendekati 0).")
+                st.markdown("#### Bobot Variabel")
                 coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
-                st.dataframe(coef_df.style.background_gradient(cmap='coolwarm'))
-            else:
-                st.info("Bobot model tidak tersedia.")
+                plot_df = coef_df.drop('Intercept')
+                plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
+                plot_df = plot_df.sort_values(by='Bobot', ascending=False)
+                
+                st.bar_chart(plot_df)
+                
+                coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
+                st.dataframe(coef_df.style.format("{:.4f}"))
+
+        with tab3:
+            st.markdown(f"Total Data: {len(df_raw)} Pasien")
+            st.dataframe(df_raw)
 
 else:
     st.error("Gagal memulai aplikasi.")
