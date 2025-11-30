@@ -14,7 +14,7 @@ import os
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (NEWS2 + AI Hybrid)",
+    page_title="Sistem Triage Medis (Lengkap)",
     layout="wide"
 )
 
@@ -156,7 +156,7 @@ def train_medical_model(df_processed):
     except:
         return None, None, None, None, None
 
-    # Fitur Dasar (Tanpa Raw Data agar NEWS2 Positif)
+    # Fitur Dasar
     feature_cols = ['Age', 'NEWS2_Score', 'Sym_Dyspnea', 'Sym_Fever']
     target_col = 'Referral_Required'
     
@@ -185,42 +185,38 @@ def train_medical_model(df_processed):
     except: 
         best_model = None
 
-    # Tambahkan Prediksi H2O sebagai fitur baru (Stacking)
-    # Kita tidak pakai data test h2o di sini untuk training logreg, hanya training data
-    # Tapi untuk simplifikasi di streamlit kita predict ulang X_train
-    # (Di production sebaiknya pakai cross-val prediction agar tidak overfitting)
+    # Stack Prediction
     s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
-    
-    # Masukkan ML_Score ke dataframe scaled
     X_train_scaled['ML_Score'] = s_train
 
-    # --- MODEL 2: Logistic Regression (Final Decision) ---
+    # --- MODEL 2: Logistic Regression ---
     log_reg = LogisticRegression(penalty='l2', C=1.0, random_state=42)
     log_reg.fit(X_train_scaled, y_train)
     
-    # Evaluasi (Pada Data Test)
-    # Siapkan data test scaled + ML Score test
+    # Evaluasi
     test_h2o = pd.concat([X_test, y_test], axis=1)
     hf_test = h2o.H2OFrame(test_h2o)
     s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
     
-    X_test_scaled['ML_Score'] = s_test # Tambahkan kolom ML_Score ke test set
+    X_test_scaled['ML_Score'] = s_test 
     
     y_prob = log_reg.predict_proba(X_test_scaled)[:, 1]
     y_pred = (y_prob > 0.5).astype(int)
     
+    # Hitung Metrik
+    fpr_val, tpr_val, _ = roc_curve(y_test, y_prob)
+    auc_val = auc(fpr_val, tpr_val)
+    cm_val = confusion_matrix(y_test, y_pred)
+
     metrics = {
-        'fpr': roc_curve(y_test, y_prob)[0], 
-        'tpr': roc_curve(y_test, y_prob)[1], 
-        'auc': auc(roc_curve(y_test, y_prob)[0], roc_curve(y_test, y_prob)[1]), 
-        'cm': confusion_matrix(y_test, y_pred)
+        'fpr': fpr_val, 
+        'tpr': tpr_val, 
+        'auc': auc_val, 
+        'cm': cm_val
     }
     
-    # --- PERBAIKAN: EKSTRAKSI KOEFISIEN (Termasuk ML_Score) ---
+    # Ambil Koefisien Lengkap
     coeffs = {'Intercept': log_reg.intercept_[0]}
-    
-    # Loop melalui KOLOM AKTUAL di X_train_scaled (bukan list feature_cols awal)
-    # X_train_scaled sekarang punya ['Age', 'NEWS2_Score', 'Sym_Dyspnea', 'Sym_Fever', 'ML_Score']
     final_cols = X_train_scaled.columns.tolist()
     
     for i, col in enumerate(final_cols):
@@ -292,14 +288,13 @@ if not df_raw.empty:
             }
             p_news2 = calculate_news2_score_full(row_input)
             
-            # Input Data (Tanpa Raw Data)
+            # Input Data
             input_dict = {
                 'Age': p_age, 
                 'NEWS2_Score': p_news2,
                 'Sym_Dyspnea': flags['Sym_Dyspnea'],
                 'Sym_Fever': flags['Sym_Fever']
             }
-            
             input_df = pd.DataFrame([input_dict])
             
             # 1. H2O Predict
@@ -311,8 +306,6 @@ if not df_raw.empty:
             scaler = st.session_state.scaler
             input_scaled_array = scaler.transform(input_df)
             input_scaled_df = pd.DataFrame(input_scaled_array, columns=input_df.columns)
-            
-            # Tambahkan ML_Score ke input yang sudah di-scale
             input_scaled_df['ML_Score'] = s_score
             
             # 3. Final Predict
@@ -333,15 +326,49 @@ if not df_raw.empty:
              st.info("Tunggu model sedang dimuat...")
 
     st.markdown("---")
-    with st.expander("Detail Bobot Model & Kontribusi AI", expanded=True):
+    # --- BAGIAN TAB UNTUK MENAMPILKAN METRIK & BOBOT ---
+    with st.expander("Detail Model & Metrik Evaluasi", expanded=True):
+        tab1, tab2 = st.tabs(["Performa Model (AUC & Matrix)", "Bobot & Interpretasi"])
+        
+        metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
-        if coeffs:
-            st.write("Sekarang **ML_Score** (Skor dari model H2O) terlihat di grafik.")
-            coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
-            # Sortir agar rapi
-            coef_df = coef_df.sort_values(by='Bobot', ascending=False)
-            st.bar_chart(coef_df.drop('Intercept'))
-            st.dataframe(coef_df.style.background_gradient(cmap='coolwarm'))
+
+        with tab1:
+            if metrics:
+                c_m1, c_m2 = st.columns(2)
+                
+                with c_m1:
+                    st.markdown("#### ROC Curve")
+                    st.metric("AUC Score", f"{metrics['auc']:.4f}")
+                    fig_roc, ax_roc = plt.subplots(figsize=(4, 3))
+                    ax_roc.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label=f"AUC={metrics['auc']:.2f}")
+                    ax_roc.plot([0, 1], [0, 1], color='gray', linestyle='--')
+                    ax_roc.set_xlabel('False Positive Rate')
+                    ax_roc.set_ylabel('True Positive Rate')
+                    ax_roc.legend(loc="lower right")
+                    st.pyplot(fig_roc)
+
+                with c_m2:
+                    st.markdown("#### Confusion Matrix")
+                    cm = metrics['cm']
+                    fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
+                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=ax_cm)
+                    ax_cm.set_xlabel('Prediksi Model')
+                    ax_cm.set_ylabel('Data Aktual')
+                    ax_cm.set_title('Confusion Matrix')
+                    st.pyplot(fig_cm)
+            else:
+                st.info("Metrik belum tersedia.")
+
+        with tab2:
+            if coeffs:
+                st.write("Grafik menunjukkan kontribusi setiap variabel terhadap prediksi risiko.")
+                coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
+                coef_df = coef_df.sort_values(by='Bobot', ascending=False)
+                st.bar_chart(coef_df.drop('Intercept'))
+                st.dataframe(coef_df.style.background_gradient(cmap='coolwarm'))
+            else:
+                st.info("Bobot belum tersedia.")
 
 else:
     st.error("Error loading data.")
