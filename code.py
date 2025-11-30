@@ -4,13 +4,15 @@ import numpy as np
 import h2o
 from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
 import math
 import os
 import io
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Rujukan Cerdas (TACC + Gejala Terstruktur)",
+    page_title="Sistem Rujukan Cerdas (TACC + Gejala + AUC)",
     page_icon="🏥",
     layout="wide"
 )
@@ -45,43 +47,27 @@ def load_dataset(uploaded_file=None):
 def get_column_options(df, col_name):
     """Mengambil nilai unik dari satu kolom spesifik."""
     if df.empty or col_name not in df.columns: return []
-    # Ambil unik, hapus nan, urutkan abjad
     items = df[col_name].unique()
     clean_items = [str(s).strip() for s in items if str(s) != 'nan' and str(s).strip() != '']
     return sorted(list(set(clean_items)))
 
 def calculate_symptom_score(row_or_list):
-    """
-    Menghitung skor gejala.
-    Menerima input berupa Row (saat training) atau List (saat prediksi).
-    """
+    """Menghitung skor gejala."""
     score = 0
     symptoms_list = []
 
-    # Jika input adalah Row DataFrame (saat training)
     if isinstance(row_or_list, pd.Series):
-        # Ambil dari kolom Symptom_1, Symptom_2, Symptom_3
-        items = [
-            row_or_list.get('Symptom_1'), 
-            row_or_list.get('Symptom_2'), 
-            row_or_list.get('Symptom_3')
-        ]
+        items = [row_or_list.get('Symptom_1'), row_or_list.get('Symptom_2'), row_or_list.get('Symptom_3')]
         symptoms_list = [str(s).strip() for s in items if str(s) != 'nan']
-    
-    # Jika input adalah List (saat prediksi di UI)
     else:
         symptoms_list = [str(s).strip() for s in row_or_list if s != "-" and s is not None]
 
-    # Logika Pembobotan Gejala
     for sym in symptoms_list:
         if not sym: continue
-        
         sym_lower = sym.lower()
-        # Gejala Berat (Bobot Tinggi - Red Flags)
-        # Anda bisa menyesuaikan daftar ini berdasarkan domain knowledge medis
-        if sym_lower in ['shortness of breath', 'chest pain', 'high fever', 'severe cough']:
+        # Gejala Berat (Red Flags)
+        if sym_lower in ['shortness of breath', 'chest pain', 'high fever', 'severe cough', 'cyanosis']:
             score += 3
-        # Gejala Sedang/Ringan
         else:
             score += 1
             
@@ -90,27 +76,23 @@ def calculate_symptom_score(row_or_list):
 def calculate_vital_score(row):
     """Menghitung Vital Score (M)."""
     score = 0
-    # Heart Rate
     try:
         hr = float(row['Heart_Rate_bpm'])
         if hr > 100 or hr < 60: score += 2
     except: pass
     
-    # Suhu
     try:
         temp = float(row['Body_Temperature_C'])
         if temp > 38.0 or temp < 36.0: score += 2
         elif temp > 37.5: score += 1
     except: pass
         
-    # Saturasi Oksigen
     try:
         o2 = float(row['Oxygen_Saturation_%'])
         if o2 < 95: score += 3
         elif o2 < 98: score += 1
     except: pass
 
-    # Tekanan Darah
     try:
         val = str(row['Blood_Pressure_mmHg'])
         if '/' in val:
@@ -124,25 +106,20 @@ def preprocess_data(df):
     """Memproses Data Mentah -> Format Model."""
     processed = df.copy()
     
-    # 1. Vital Score (M)
     processed['Vital_Score'] = processed.apply(calculate_vital_score, axis=1)
-    
-    # 2. Symptom Score (Gejala)
     processed['Symptom_Score'] = processed.apply(calculate_symptom_score, axis=1)
     
-    # 3. Severity Score (C)
     severity_map = {'Mild': 0, 'Moderate': 1, 'Severe': 2}
     processed['Severity'] = processed['Severity'].astype(str).str.strip() 
     processed['Severity_Score'] = processed['Severity'].map(severity_map).fillna(0)
     
-    # 4. Target Variable
     processed['Referral_Required'] = processed.apply(
         lambda x: 1 if x['Severity'] == 'Severe' else 0, axis=1
     )
     
     return processed[['Age', 'Severity_Score', 'Vital_Score', 'Symptom_Score', 'Referral_Required']]
 
-# --- 4. Pelatihan Model ---
+# --- 4. Pelatihan Model & Evaluasi ---
 @st.cache_resource
 def train_hybrid_model(df_processed):
     # Init H2O
@@ -150,7 +127,7 @@ def train_hybrid_model(df_processed):
         h2o.init(max_mem_size='512M')
     except:
         st.error("Gagal inisialisasi H2O. Pastikan Java terinstal.")
-        return None, None, None
+        return None, None, None, None
 
     hf = h2o.H2OFrame(df_processed)
     y = 'Referral_Required'
@@ -163,7 +140,7 @@ def train_hybrid_model(df_processed):
     aml.train(x=x, y=y, training_frame=hf)
     best_model_h2o = aml.leader
     
-    # Prediksi S
+    # Prediksi S (Skor ML)
     preds = best_model_h2o.predict(hf)
     ml_scores = preds['p1'].as_data_frame().values.flatten()
     
@@ -175,6 +152,21 @@ def train_hybrid_model(df_processed):
     log_reg = LogisticRegression(penalty=None, solver='lbfgs', max_iter=2000)
     log_reg.fit(X_logreg, Y_logreg)
     
+    # --- EVALUASI MODEL (AUC & ROC) ---
+    # Kita prediksi ulang probabilitas menggunakan model LogReg (Final Model)
+    y_prob_final = log_reg.predict_proba(X_logreg)[:, 1]
+    
+    # Hitung Kurva ROC
+    fpr, tpr, thresholds = roc_curve(Y_logreg, y_prob_final)
+    roc_auc = auc(fpr, tpr)
+    
+    # Simpan hasil evaluasi
+    eval_metrics = {
+        'fpr': fpr,
+        'tpr': tpr,
+        'auc': roc_auc
+    }
+    
     coeffs = {
         'Intercept (beta_0)': log_reg.intercept_[0],
         'Age (beta_1)': log_reg.coef_[0][0],
@@ -184,7 +176,7 @@ def train_hybrid_model(df_processed):
         'ML_Score (beta_5)': log_reg.coef_[0][4]
     }
     
-    return best_model_h2o, log_reg, coeffs
+    return best_model_h2o, log_reg, coeffs, eval_metrics
 
 # --- 5. Fungsi Kalkulasi Probabilitas ---
 def calculate_final_prob(age, severity, vital, sym_score, ml_score, coeffs):
@@ -200,7 +192,6 @@ def calculate_final_prob(age, severity, vital, sym_score, ml_score, coeffs):
 
 # --- MAIN APP ---
 
-# Sidebar: Upload
 st.sidebar.header("📁 Data Input")
 uploaded_file = st.sidebar.file_uploader("Upload CSV (Opsional)", type=["csv"])
 
@@ -208,11 +199,9 @@ uploaded_file = st.sidebar.file_uploader("Upload CSV (Opsional)", type=["csv"])
 df_raw = load_dataset(uploaded_file)
 
 if not df_raw.empty:
-    # --- PROSES UNTUK DROPDOWN GEJALA ---
-    # Ambil opsi unik untuk masing-masing kolom
     s1_options = get_column_options(df_raw, 'Symptom_1')
-    s2_options = ["-"] + get_column_options(df_raw, 'Symptom_2') # Tambah opsi kosong
-    s3_options = ["-"] + get_column_options(df_raw, 'Symptom_3') # Tambah opsi kosong
+    s2_options = ["-"] + get_column_options(df_raw, 'Symptom_2')
+    s3_options = ["-"] + get_column_options(df_raw, 'Symptom_3')
     
     df_model = preprocess_data(df_raw)
 
@@ -222,10 +211,35 @@ if not df_raw.empty:
         st.cache_resource.clear()
         st.rerun()
 
-    with st.spinner("Sedang melatih model..."):
-        gbm_model, logreg_model, coefficients = train_hybrid_model(df_model)
+    with st.spinner("Melatih model & menghitung AUC..."):
+        gbm_model, logreg_model, coefficients, metrics = train_hybrid_model(df_model)
+
+    # --- TAMPILKAN METRIK EVALUASI DI SIDEBAR ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 Performa Model")
+    
+    if metrics:
+        # Tampilkan Nilai AUC
+        st.sidebar.metric("ROC AUC Score", f"{metrics['auc']:.4f}")
+        
+        # Plot ROC Curve menggunakan Matplotlib
+        fig, ax = plt.subplots()
+        ax.plot(metrics['fpr'], metrics['tpr'], color='darkorange', lw=2, label=f'ROC curve (area = {metrics["auc"]:.2f})')
+        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title('Receiver Operating Characteristic')
+        ax.legend(loc="lower right")
+        ax.grid(alpha=0.3)
+        
+        # Tampilkan plot di sidebar
+        st.sidebar.pyplot(fig)
+        st.sidebar.caption("Grafik menunjukkan seberapa baik model membedakan pasien butuh rujukan vs tidak.")
 
     # Tampilkan Rumus
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 🧮 Rumus Prediksi")
     if coefficients:
         formula_latex = f"""
@@ -252,7 +266,6 @@ if not df_raw.empty:
         st.write("Masukkan data vital dan gejala pasien:")
         
         with st.form("referral_form"):
-            # Baris 1: Vital Signs
             st.subheader("1. Tanda Vital")
             c1, c2 = st.columns(2)
             with c1:
@@ -264,40 +277,27 @@ if not df_raw.empty:
                 p_o2 = st.number_input("Saturasi Oksigen (%)", 50, 100, 96)
                 p_severity_label = st.selectbox("Tingkat Keparahan Umum", ["Mild", "Moderate", "Severe"])
 
-            # Baris 2: Gejala (Selectbox Terpisah)
             st.subheader("2. Keluhan & Gejala")
-            st.info("Pilih gejala sesuai urutan prioritas yang muncul.")
-            
             sc1, sc2, sc3 = st.columns(3)
             with sc1:
-                # Selectbox untuk Symptom 1 (Tanpa opsi kosong jika data tidak ada kosong)
                 p_sym1 = st.selectbox("Gejala Utama (1)", options=s1_options)
             with sc2:
-                # Selectbox untuk Symptom 2 (Ada opsi "-")
                 p_sym2 = st.selectbox("Gejala Tambahan (2)", options=s2_options)
             with sc3:
-                # Selectbox untuk Symptom 3 (Ada opsi "-")
                 p_sym3 = st.selectbox("Gejala Tambahan (3)", options=s3_options)
             
             submit_btn = st.form_submit_button("Analisis Keputusan")
         
         if submit_btn:
-            # 1. Kumpulkan Gejala dari 3 Dropdown
             selected_symptoms_raw = [p_sym1, p_sym2, p_sym3]
-            # Filter hanya yang valid (bukan "-" dan bukan None)
             valid_symptoms = [s for s in selected_symptoms_raw if s != "-"]
             
-            # 2. Hitung Semua Skor
             p_sev_score = {"Mild": 0, "Moderate": 1, "Severe": 2}[p_severity_label]
-            
             row_vital = {'Heart_Rate_bpm': p_hr, 'Body_Temperature_C': p_temp, 
                          'Oxygen_Saturation_%': p_o2, 'Blood_Pressure_mmHg': p_bp}
             p_vital_score = calculate_vital_score(row_vital)
-            
-            # Hitung Symptom Score
             p_sym_score = calculate_symptom_score(valid_symptoms)
             
-            # 3. Prediksi ML (S)
             input_h2o = pd.DataFrame({
                 'Age': [p_age], 
                 'Severity_Score': [p_sev_score], 
@@ -308,10 +308,8 @@ if not df_raw.empty:
             ml_pred = gbm_model.predict(hf_sample)
             s_score = ml_pred['p1'].as_data_frame().values[0][0]
             
-            # 4. Kalkulasi Final
             final_prob = calculate_final_prob(p_age, p_sev_score, p_vital_score, p_sym_score, s_score, coefficients)
             
-            # 5. Tampilkan Hasil
             st.markdown("---")
             st.subheader("📋 Hasil Analisis")
             
@@ -336,11 +334,7 @@ if not df_raw.empty:
 
     with col2:
         st.subheader("📊 Statistik Dataset")
-        st.dataframe(df_raw[['Age', 'Symptom_1', 'Symptom_2', 'Severity']].head(10), hide_index=True)
-        
-        st.write("---")
-        st.write("**Contoh Opsi Gejala 1:**")
-        st.text(", ".join(s1_options[:10]) + " ...")
+        st.dataframe(df_raw[['Age', 'Symptom_1', 'Severity', 'Diagnosis']].head(10), hide_index=True)
         
         if coefficients:
             st.write("---")
@@ -350,4 +344,4 @@ if not df_raw.empty:
             st.bar_chart(coef_chart)
 
 else:
-    st.error("File 'disease_diagnosis.csv' tidak ditemukan. Harap pastikan file ada di GitHub/Folder.")
+    st.error("File 'disease_diagnosis.csv' tidak ditemukan.")
