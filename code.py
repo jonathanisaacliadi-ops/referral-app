@@ -6,8 +6,7 @@ from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import train_test_split
-# Import tambahan untuk Standardisasi
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler # Ditambahkan
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
@@ -30,8 +29,6 @@ def load_fixed_dataset():
         except Exception as e:
             st.error(f"File database rusak: {e}")
     else:
-        # Menghapus st.error agar kode tetap berjalan jika file tidak ada
-        # Hati-hati: ini mengasumsikan file ada di lingkungan produksi Streamlit
         st.error("DATABASE TIDAK DITEMUKAN. Pastikan disease_diagnosis.csv ada.")
     return pd.DataFrame()
 
@@ -134,13 +131,17 @@ def train_medical_model(df_processed):
         if not h2o.connection().is_running():
              h2o.init(max_mem_size='400M', nthreads=1) 
     except:
-        return None, None, None, None, None # Menambahkan scaler ke nilai kembali
+        return None, None, None, None, None # Mengembalikan None jika H2O gagal
 
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    except ValueError:
+         # Menangani kegagalan stratify (mis. kelas terlalu sedikit)
+        return None, None, None, None, None
+
     train_pd = pd.concat([X_train, y_train], axis=1)
     test_pd = pd.concat([X_test, y_test], axis=1)
     
@@ -160,12 +161,12 @@ def train_medical_model(df_processed):
         verbosity='error',
         balance_classes=True
     ) 
+    best_model = None
     try:
         aml.train(x=x_cols, y=y_col, training_frame=hf_train)
+        best_model = aml.leader
     except: 
-        return None, None, None, None, None # Menambahkan scaler ke nilai kembali
-
-    best_model = aml.leader
+        return None, None, None, None, None # Mengembalikan None jika H2O training gagal
     
     s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
     s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
@@ -176,7 +177,7 @@ def train_medical_model(df_processed):
     # --- PERUBAHAN UTAMA: Standardisasi Fitur Numerik untuk LogReg ---
     scaler = StandardScaler()
     
-    # Identifikasi kolom yang perlu diskalakan (semua kecuali kolom biner/dummy)
+    # Identifikasi kolom yang akan diskalakan
     cols_to_scale = list(X_train.columns) 
     
     # Latih scaler pada data train dan transformasikan
@@ -209,7 +210,6 @@ def train_medical_model(df_processed):
     return best_model, log_reg, coeffs, metrics, scaler
 
 # --- 5. Kalkulasi ---
-# Menambahkan scaler ke argumen fungsi
 def calculate_final_prob(input_dict, ml_score, coeffs, scaler):
     
     # Buat DataFrame input untuk skalasi
@@ -248,11 +248,13 @@ if not df_raw.empty:
             st.session_state.coef = coef
             st.session_state.metrics = metr
             st.session_state.scaler = sc # Simpan scaler
-            st.session_state.model_ready = True
-    
-    # Pastikan model dan scaler siap sebelum melanjutkan
-    if not st.session_state.get('model_ready') or st.session_state.gbm is None:
-        st.error("Gagal memuat atau melatih model. Periksa koneksi H2O atau integritas data.")
+            # Model siap hanya jika GBM berhasil dilatih (tidak None)
+            st.session_state.model_ready = (gbm is not None)
+
+    # Pengecekan status model (sesuai permintaan, tanpa fallback kustom)
+    if not st.session_state.get('model_ready'):
+        st.error("Gagal memuat atau melatih Model Triage AI. Mohon periksa file data (`disease_diagnosis.csv`), koneksi H2O, atau *logs* konsol untuk detail kesalahan.")
+        # Hentikan eksekusi UI utama jika model gagal dimuat/dilatih
         st.stop()
         
     # --- UI UTAMA ---
@@ -317,14 +319,11 @@ if not df_raw.empty:
             input_df_gbm = pd.DataFrame([input_dict])
             hf_sample = h2o.H2OFrame(input_df_gbm)
             
-            # Pastikan model GBM tersedia
-            if st.session_state.gbm:
-                ml_pred = st.session_state.gbm.predict(hf_sample)
-                s_score = ml_pred['p1'].as_data_frame().values[0][0]
-            else:
-                s_score = 0.5 # Default jika GBM gagal
+            # Prediksi GBM untuk mendapatkan ML_Score
+            ml_pred = st.session_state.gbm.predict(hf_sample)
+            s_score = ml_pred['p1'].as_data_frame().values[0][0]
                 
-            # Kalkulasi probabilitas akhir menggunakan scaler
+            # Kalkulasi probabilitas akhir menggunakan scaler dan koefisien yang berhasil dilatih
             final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef, st.session_state.scaler)
             
             k1, k2, k3 = st.columns(3)
