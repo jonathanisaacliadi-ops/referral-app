@@ -11,12 +11,13 @@ import seaborn as sns
 import math
 import os
 
+# --- 1. Konfigurasi Halaman ---
 st.set_page_config(
     page_title="Sistem Triage Medis",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
+# --- 2. Fungsi Load Data ---
 @st.cache_data
 def load_fixed_dataset():
     local_path = "disease_diagnosis.csv"
@@ -30,6 +31,7 @@ def load_fixed_dataset():
         st.error("DATABASE TIDAK DITEMUKAN. Pastikan disease_diagnosis.csv ada.")
     return pd.DataFrame()
 
+# --- 3. Feature Engineering ---
 def get_column_options(df, col_name):
     if df.empty or col_name not in df.columns: return []
     items = df[col_name].unique()
@@ -121,6 +123,7 @@ def preprocess_data(df):
         'Referral_Required'
     ]]
 
+# --- 4. Pelatihan Model ---
 @st.cache_resource
 def train_medical_model(df_processed):
     try:
@@ -182,6 +185,7 @@ def train_medical_model(df_processed):
         
     return best_model, log_reg, coeffs, metrics
 
+# --- 5. Kalkulasi ---
 def calculate_final_prob(input_dict, ml_score, coeffs):
     logit = coeffs['Intercept']
     for feat, val in input_dict.items():
@@ -191,32 +195,26 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     prob = 1 / (1 + math.exp(-logit))
     return prob
 
+# --- MAIN APP ---
+
 df_raw = load_fixed_dataset()
 
 if not df_raw.empty:
-    s1_options = get_column_options(df_raw, 'Symptom_1')
-    s2_options = ["-"] + get_column_options(df_raw, 'Symptom_2')
-    s3_options = ["-"] + get_column_options(df_raw, 'Symptom_3')
-    
     df_model = preprocess_data(df_raw)
-
-    st.sidebar.title("Status Validasi")
     
+    # Train Model (Hidden Spinner)
     if 'metrics' not in st.session_state:
-        with st.spinner("Memproses Model..."):
+        with st.spinner("Memproses Model AI & Standar NEWS2..."):
             gbm, logreg, coef, metr = train_medical_model(df_model)
             st.session_state.gbm = gbm
             st.session_state.logreg = logreg
             st.session_state.coef = coef
             st.session_state.metrics = metr
             st.session_state.model_ready = True
-    
-    if st.session_state.get('model_ready'):
-        metrics = st.session_state.metrics
-        st.sidebar.metric("Akurasi Medis (AUC)", f"{metrics['auc']:.4f}")
 
+    # --- UI UTAMA ---
     st.title("Sistem Triage & Rujukan Klinis")
-    st.markdown("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional.")
+    st.write("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional (NEWS2, JNC8).")
     st.markdown("---")
 
     col1, col2 = st.columns([1, 1])
@@ -234,6 +232,10 @@ if not df_raw.empty:
                 p_o2 = st.number_input("Saturasi Oksigen (%)", 50, 100, 98)
 
             st.write("Keluhan & Gejala")
+            s1_options = get_column_options(df_raw, 'Symptom_1')
+            s2_options = ["-"] + get_column_options(df_raw, 'Symptom_2')
+            s3_options = ["-"] + get_column_options(df_raw, 'Symptom_3')
+            
             sc1, sc2, sc3 = st.columns(3)
             with sc1: p_sym1 = st.selectbox("Gejala 1", options=s1_options)
             with sc2: p_sym2 = st.selectbox("Gejala 2", options=s2_options)
@@ -295,6 +297,7 @@ if not df_raw.empty:
         else:
             st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
 
+    # --- MENU BAWAH (COLLAPSIBLE) ---
     st.markdown("---")
     with st.expander("Detail Model, Rumus & Data", expanded=False):
         tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
@@ -331,8 +334,11 @@ if not df_raw.empty:
                 with c2:
                     st.write("Confusion Matrix:")
                     cm = metrics['cm']
-                    group_names = ['TN (Aman)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
+                    
+                    # VARIABLE LABEL UNTUK KOTAK
+                    group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
                     group_counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
+                    
                     labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
                     labels = np.asarray(labels).reshape(2,2)
                     
