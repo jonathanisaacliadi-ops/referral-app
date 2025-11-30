@@ -194,7 +194,7 @@ def train_medical_model(df_processed):
     X_train['ML_Score'] = s_train
     X_test['ML_Score'] = s_test
     
-    # --- IMPLEMENTASI STANDARDISASI ---
+    # --- IMPLEMENTASI STANDARDISASI: MENGHINDARI SERIALISASI SCALER OBJEK ---
     scaler = StandardScaler()
     
     cols_to_scale = list(X_train.columns) 
@@ -229,38 +229,41 @@ def train_medical_model(df_processed):
     for i, col in enumerate(cols_to_scale):
         coeffs[col] = log_reg.coef_[0][i]
         
-    # KUNCI PERBAIKAN: Masukkan objek scaler ke dalam dictionary coeffs
-    # Ini menjaga jumlah nilai return (4) tetapi menyediakan scaler.
-    coeffs['feature_scaler'] = scaler 
+    # KUNCI PERBAIKAN: Simpan parameter scaler (mean & std) sebagai array/list sederhana
+    coeffs['scaler_cols'] = cols_to_scale
+    coeffs['scaler_mean'] = scaler.mean_.tolist()
+    coeffs['scaler_std'] = scaler.scale_.tolist()
         
     # Mengembalikan 4 nilai sesuai signature asli
     return best_model, log_reg, coeffs, metrics
 
 # --- 5. Kalkulasi ---
-# Menghapus 'scaler' dari argumen karena diambil dari 'coeffs'
+# Mengimplementasikan skalasi manual menggunakan parameter yang tersimpan
 def calculate_final_prob(input_dict, ml_score, coeffs):
     
-    # AMBIL SCALER DARI DICTIONARY COEFFS
-    scaler = coeffs.get('feature_scaler')
-    if scaler is None:
-         # Fallback jika scaler hilang (seharusnya tidak terjadi)
+    # Ambil parameter scaler dari dictionary coeffs
+    try:
+        cols_to_scale = coeffs['scaler_cols']
+        mean_values = np.array(coeffs['scaler_mean'])
+        std_values = np.array(coeffs['scaler_std'])
+    except KeyError:
+         # Jika parameter scaler hilang (seharusnya tidak terjadi setelah pelatihan)
          return 0.5 
 
-    # Buat DataFrame input untuk skalasi
+    # Buat DataFrame input
     input_df = pd.DataFrame([input_dict])
     input_df['ML_Score'] = ml_score 
     
-    cols_to_scale = list(input_df.columns)
-    
-    # Skalakan data input menggunakan scaler yang sudah dilatih
-    input_scaled = scaler.transform(input_df[cols_to_scale])
-    input_scaled = pd.DataFrame(input_scaled, index=input_df.index, columns=cols_to_scale)
+    # Skalakan data input secara manual
+    input_values = input_df[cols_to_scale].values 
+    input_scaled_manual = (input_values - mean_values) / std_values
+    input_scaled_df = pd.DataFrame(input_scaled_manual, columns=cols_to_scale, index=input_df.index)
     
     # Hitung logit menggunakan koefisien dan data yang diskalakan
     logit = coeffs['Intercept']
     for feat in cols_to_scale:
         if feat in coeffs:
-            logit += coeffs[feat] * input_scaled.loc[0, feat]
+            logit += coeffs[feat] * input_scaled_df.loc[0, feat]
             
     prob = 1 / (1 + math.exp(-logit))
     return prob
@@ -358,7 +361,7 @@ if not df_raw.empty:
             ml_pred = st.session_state.gbm.predict(hf_sample)
             s_score = ml_pred['p1'].as_data_frame().values[0][0]
                 
-            # Kalkulasi probabilitas akhir. Coefs sekarang membawa scaler.
+            # Kalkulasi probabilitas akhir. Coefs sekarang membawa parameter scaler.
             final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef)
             
             k1, k2, k3 = st.columns(3)
@@ -388,9 +391,11 @@ if not df_raw.empty:
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef').copy() # Salin untuk membuang scaler di plot
         
-        # Hapus scaler dari dictionary untuk tujuan tampilan
-        if 'feature_scaler' in coeffs:
-            coeffs.pop('feature_scaler')
+        # Hapus parameter scaler dari dictionary untuk tujuan tampilan
+        scaler_keys = ['scaler_cols', 'scaler_mean', 'scaler_std']
+        for key in scaler_keys:
+            if key in coeffs:
+                coeffs.pop(key)
 
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
