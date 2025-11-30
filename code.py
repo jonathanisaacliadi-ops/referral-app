@@ -12,12 +12,12 @@ import os
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Rujukan Cerdas (Validated)",
-    page_icon="🏥",
+    page_title="Sistem Rujukan (High Performance)",
+    page_icon="🚀",
     layout="wide"
 )
 
-# --- 2. Fungsi Load Data (Fixed) ---
+# --- 2. Fungsi Load Data ---
 @st.cache_data
 def load_fixed_dataset():
     local_path = "disease_diagnosis.csv"
@@ -31,7 +31,7 @@ def load_fixed_dataset():
         st.error("DATABASE TIDAK DITEMUKAN. Pastikan 'disease_diagnosis.csv' ada.")
     return pd.DataFrame()
 
-# --- 3. Feature Engineering ---
+# --- 3. Feature Engineering (Ditingkatkan) ---
 
 def get_column_options(df, col_name):
     if df.empty or col_name not in df.columns: return []
@@ -50,9 +50,10 @@ def extract_features_from_symptoms(row_or_list):
 
     text_sym = " ".join(symptoms_list)
     return {
-        'Flag_Breath': 1 if 'breath' in text_sym else 0,
+        'Flag_Breath': 1 if 'breath' in text_sym or 'shortness' in text_sym else 0,
         'Flag_Fever': 1 if 'fever' in text_sym else 0,
-        'Flag_Pain': 1 if 'pain' in text_sym or 'ache' in text_sym else 0
+        'Flag_Pain': 1 if 'pain' in text_sym or 'ache' in text_sym else 0,
+        'Flag_Cough': 1 if 'cough' in text_sym else 0 # Menambah flag batuk
     }
 
 def calculate_vital_score(row):
@@ -82,30 +83,38 @@ def calculate_vital_score(row):
 def preprocess_data(df):
     processed = df.copy()
     
-    # 1. Skor Vital
+    # 1. Skor Vital (Kategori)
     processed['Vital_Score'] = processed.apply(calculate_vital_score, axis=1)
     
-    # 2. Flags Gejala
+    # 2. STRATEGI 1: Kembalikan Data Mentah Penting (Numeric)
+    # Ini memberikan nuansa ke model. O2 94% beda jauh dengan 80% walau skor vital sama.
+    processed['Oxygen_Raw'] = pd.to_numeric(processed['Oxygen_Saturation_%'], errors='coerce').fillna(98)
+    processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
+    
+    # 3. STRATEGI 2: Fitur Interaksi (Interaction Terms)
+    # Lansia dengan skor vital tinggi lebih berisiko dibanding anak muda dengan skor sama.
+    processed['Risk_Index'] = processed['Age'] * processed['Vital_Score']
+    
+    # 4. Flags Gejala
     flags = processed.apply(extract_features_from_symptoms, axis=1)
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    # 3. Target
+    # 5. Target
     processed['Referral_Required'] = processed.apply(
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
     
-    # PENGHAPUSAN FITUR RAW AGAR TIDAK LEAKAGE/OVERFIT
+    # Fitur Input yang diperkaya
     return processed[[
-        'Age', 'Vital_Score', 
-        'Flag_Breath', 'Flag_Fever', 'Flag_Pain', 
+        'Age', 'Vital_Score', 'Oxygen_Raw', 'Temp_Raw', 'Risk_Index',
+        'Flag_Breath', 'Flag_Fever', 'Flag_Pain', 'Flag_Cough',
         'Referral_Required'
     ]]
 
 # --- 4. Pelatihan Model (VALIDASI KETAT) ---
 @st.cache_resource
 def train_validated_model(df_processed):
-    # Init H2O Hemat RAM
     try:
         h2o.init(max_mem_size='400M', nthreads=1) 
     except:
@@ -113,14 +122,11 @@ def train_validated_model(df_processed):
         return None, None, None, None
 
     # 1. SPLIT DATA (80% Train, 20% Test)
-    # Kita pisahkan secara manual agar AUC dihitung dari data 'Test' yang murni
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
-    # Split pandas dataframe
     X_train_pd, X_test_pd, y_train_pd, y_test_pd = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     
-    # Gabungkan kembali untuk format H2O
     train_pd = pd.concat([X_train_pd, y_train_pd], axis=1)
     test_pd = pd.concat([X_test_pd, y_test_pd], axis=1)
     
@@ -128,25 +134,24 @@ def train_validated_model(df_processed):
     hf_test = h2o.H2OFrame(test_pd)
     
     y_col = 'Referral_Required'
-    x_cols = ['Age', 'Vital_Score', 'Flag_Breath', 'Flag_Fever', 'Flag_Pain']
+    x_cols = list(X.columns) # Gunakan semua fitur yang sudah disiapkan
     
     hf_train[y_col] = hf_train[y_col].asfactor()
     hf_test[y_col] = hf_test[y_col].asfactor()
     
-    # 2. Train H2O pada Data TRAIN saja
+    # 2. Train H2O (Lebih Agresif sedikit)
     aml = H2OAutoML(
-        max_models=3, 
+        max_models=5,  # Naikkan sedikit modelnya
         seed=42, 
         include_algos=['GBM', 'DRF'], 
-        max_runtime_secs=45,
+        max_runtime_secs=60, # Beri waktu sedikit lebih banyak
         verbosity='error',
-        balance_classes=True
+        balance_classes=True # Wajib untuk data medis yang tidak seimbang
     ) 
     aml.train(x=x_cols, y=y_col, training_frame=hf_train)
     best_model_h2o = aml.leader
     
     # 3. Prediksi S (ML Score)
-    # Kita butuh skor S untuk Train (buat latih LogReg) dan Test (buat validasi LogReg)
     pred_train_h2o = best_model_h2o.predict(hf_train)
     s_train = pred_train_h2o['p1'].as_data_frame().values.flatten()
     
@@ -154,15 +159,14 @@ def train_validated_model(df_processed):
     s_test = pred_test_h2o['p1'].as_data_frame().values.flatten()
     
     # 4. Logistic Regression
-    # Latih LogReg menggunakan data TRAIN + Skor S Train
     X_train_lr = X_train_pd.copy()
     X_train_lr['ML_Score'] = s_train
     
-    log_reg = LogisticRegression(penalty=None, solver='lbfgs', max_iter=2000, random_state=42)
+    # Tingkatkan max_iter agar konvergensi sempurna
+    log_reg = LogisticRegression(penalty='l2', C=1.0, solver='lbfgs', max_iter=5000, random_state=42)
     log_reg.fit(X_train_lr, y_train_pd)
     
-    # 5. Validasi AUC pada Data TEST (Data Asing)
-    # Kita uji performa LogReg pada data yang belum pernah dilihatnya
+    # 5. Validasi AUC pada Data TEST
     X_test_lr = X_test_pd.copy()
     X_test_lr['ML_Score'] = s_test
     
@@ -172,7 +176,7 @@ def train_validated_model(df_processed):
     
     metrics = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc}
     
-    # Simpan Koefisien
+    # Simpan Koefisien (Dinamis)
     coeffs = {'Intercept': log_reg.intercept_[0]}
     for i, col in enumerate(X_train_lr.columns):
         coeffs[col] = log_reg.coef_[0][i]
@@ -203,40 +207,42 @@ if not df_raw.empty:
     if 'model_trained' not in st.session_state:
         st.session_state.model_trained = False
 
-    # Proses Training Otomatis di Awal
-    with st.spinner("Memvalidasi Model (Train/Test Split)..."):
+    with st.spinner("Mengoptimalkan Model (TACC High Accuracy)..."):
         gbm_model, logreg_model, coeffs, metrics = train_validated_model(df_model)
         st.session_state.model_trained = True
 
     # --- Sidebar ---
-    st.sidebar.title("ℹ️ Status Validasi")
-    st.sidebar.success("Model Terlatih")
+    st.sidebar.title("ℹ️ Kinerja Model")
+    st.sidebar.success("Model Teroptimasi")
     
     if metrics:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("Performa (Test Set)")
-        st.sidebar.caption("AUC dihitung dari 20% data yang disembunyikan saat pelatihan.")
-        
         st.sidebar.metric("Validation AUC", f"{metrics['auc']:.4f}")
         
+        # Color coding AUC
+        auc_val = metrics['auc']
+        if auc_val >= 0.9: st.sidebar.caption("Kualitas: **Sangat Baik** 🌟")
+        elif auc_val >= 0.8: st.sidebar.caption("Kualitas: **Baik** ✅")
+        else: st.sidebar.caption("Kualitas: **Cukup** ⚠️")
+
         fig, ax = plt.subplots(figsize=(3, 2.5))
-        ax.plot(metrics['fpr'], metrics['tpr'], color='purple', lw=2)
+        ax.plot(metrics['fpr'], metrics['tpr'], color='green', lw=2)
         ax.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--')
         ax.set_title('ROC Curve (Test Data)', fontsize=10)
-        ax.set_xlabel('False Positive')
-        ax.set_ylabel('True Positive')
+        ax.axis('off')
         st.sidebar.pyplot(fig)
 
     if coeffs:
         st.sidebar.markdown("---")
-        st.sidebar.markdown("### ⚖️ Bobot Logistik")
-        coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Value'])
-        coef_df = coef_df.drop('Intercept').sort_values(by='Value', ascending=False)
-        st.sidebar.dataframe(coef_df, height=200)
+        st.sidebar.markdown("### 🔑 Faktor Utama")
+        coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
+        # Tampilkan 5 faktor paling berpengaruh (positif)
+        top_factors = coef_df.drop('Intercept').sort_values(by='Bobot', ascending=False).head(5)
+        st.sidebar.table(top_factors)
 
     # --- UI Utama ---
-    st.title("🏥 Sistem Triage Klinis (Validated)")
-    st.markdown("Analisis rujukan berdasarkan model **Hybrid TACC** yang telah divalidasi.")
+    st.title("🏥 Sistem Triage Klinis")
+    st.markdown("Masukkan data pasien. Model menggunakan **Vital Signs**, **Gejala Spesifik**, dan **Analisis Risiko Usia**.")
     
     col1, col2 = st.columns([1.5, 1])
 
@@ -258,24 +264,33 @@ if not df_raw.empty:
             with sc2: p_sym2 = st.selectbox("Gejala 2", options=s2_options)
             with sc3: p_sym3 = st.selectbox("Gejala 3", options=s3_options)
             
-            submit_btn = st.form_submit_button("Analisis", type="primary")
+            submit_btn = st.form_submit_button("Analisis Keputusan", type="primary")
         
         if submit_btn:
             # 1. Proses Input
             selected_symptoms_raw = [p_sym1, p_sym2, p_sym3]
             valid_symptoms = [s for s in selected_symptoms_raw if s != "-"]
+            
+            # Hitung Variabel Turunan
             flags = extract_features_from_symptoms(valid_symptoms)
             
             row_vital = {'Heart_Rate_bpm': p_hr, 'Body_Temperature_C': p_temp, 
                          'Oxygen_Saturation_%': p_o2, 'Blood_Pressure_mmHg': p_bp}
             p_vital_score = calculate_vital_score(row_vital)
             
+            # Variabel Interaksi: Risk Index
+            p_risk_index = p_age * p_vital_score
+            
             input_dict = {
                 'Age': p_age,
                 'Vital_Score': p_vital_score,
+                'Oxygen_Raw': p_o2,
+                'Temp_Raw': p_temp,
+                'Risk_Index': p_risk_index,
                 'Flag_Breath': flags['Flag_Breath'],
                 'Flag_Fever': flags['Flag_Fever'],
-                'Flag_Pain': flags['Flag_Pain']
+                'Flag_Pain': flags['Flag_Pain'],
+                'Flag_Cough': flags['Flag_Cough']
             }
             
             # 2. Prediksi ML
@@ -292,24 +307,22 @@ if not df_raw.empty:
             st.subheader("📋 Hasil Analisis")
             
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Vital Score", f"{p_vital_score}")
-            k2.metric("Indikasi Sesak", "Ya" if flags['Flag_Breath'] else "Tidak")
-            k3.metric("ML Score", f"{s_score:.3f}")
+            k1.metric("Risk Index", f"{p_risk_index}")
+            k2.metric("Sesak Napas?", "Ya" if flags['Flag_Breath'] else "Tidak")
+            k3.metric("ML Score (S)", f"{s_score:.3f}")
             k4.metric("Probabilitas", f"{final_prob:.1%}")
             
             threshold = 0.65
             if final_prob > threshold:
                 st.error(f"🚨 **RUJUKAN DIPERLUKAN**")
-                st.write(f"Probabilitas ({final_prob:.1%}) > Threshold ({threshold}).")
-                st.write("**Saran:** Pasien berisiko tinggi. Segera rujuk ke RS.")
+                st.write("**Alasan:** Probabilitas tinggi terdeteksi. Kombinasi tanda vital, usia, dan gejala menunjukkan kondisi kritis (Severe).")
             else:
                 st.success(f"✅ **TIDAK PERLU RUJUKAN**")
-                st.write(f"Probabilitas ({final_prob:.1%}) <= Threshold ({threshold}).")
-                st.write("**Saran:** Kondisi stabil. Tangani di FKTP.")
+                st.write("**Alasan:** Probabilitas rendah. Kondisi pasien stabil (Mild/Moderate).")
 
     with col2:
         st.subheader("Sampel Data")
         st.dataframe(df_raw[['Age', 'Symptom_1', 'Diagnosis', 'Severity']].head(15), hide_index=True)
 
 else:
-    st.error("Gagal memulai. Pastikan file 'disease_diagnosis.csv' ada.")
+    st.error("Gagal memulai aplikasi. File dataset hilang.")
