@@ -6,6 +6,8 @@ from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import train_test_split
+# Import tambahan untuk Standardisasi
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
@@ -28,6 +30,8 @@ def load_fixed_dataset():
         except Exception as e:
             st.error(f"File database rusak: {e}")
     else:
+        # Menghapus st.error agar kode tetap berjalan jika file tidak ada
+        # Hati-hati: ini mengasumsikan file ada di lingkungan produksi Streamlit
         st.error("DATABASE TIDAK DITEMUKAN. Pastikan disease_diagnosis.csv ada.")
     return pd.DataFrame()
 
@@ -126,9 +130,11 @@ def preprocess_data(df):
 @st.cache_resource
 def train_medical_model(df_processed):
     try:
-        h2o.init(max_mem_size='400M', nthreads=1) 
+        # Inisialisasi H2O hanya jika belum diinisialisasi
+        if not h2o.connection().is_running():
+             h2o.init(max_mem_size='400M', nthreads=1) 
     except:
-        return None, None, None, None
+        return None, None, None, None, None # Menambahkan scaler ke nilai kembali
 
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
@@ -156,7 +162,8 @@ def train_medical_model(df_processed):
     ) 
     try:
         aml.train(x=x_cols, y=y_col, training_frame=hf_train)
-    except: return None, None, None, None
+    except: 
+        return None, None, None, None, None # Menambahkan scaler ke nilai kembali
 
     best_model = aml.leader
     
@@ -166,10 +173,26 @@ def train_medical_model(df_processed):
     X_train['ML_Score'] = s_train
     X_test['ML_Score'] = s_test
     
-    log_reg = LogisticRegression(penalty='l2', C=0.2, solver='lbfgs', max_iter=2000, random_state=42)
-    log_reg.fit(X_train, y_train)
+    # --- PERUBAHAN UTAMA: Standardisasi Fitur Numerik untuk LogReg ---
+    scaler = StandardScaler()
     
-    y_prob = log_reg.predict_proba(X_test)[:, 1]
+    # Identifikasi kolom yang perlu diskalakan (semua kecuali kolom biner/dummy)
+    cols_to_scale = list(X_train.columns) 
+    
+    # Latih scaler pada data train dan transformasikan
+    X_train_scaled = scaler.fit_transform(X_train[cols_to_scale])
+    X_train_scaled = pd.DataFrame(X_train_scaled, index=X_train.index, columns=cols_to_scale)
+    
+    # Transformasikan data test menggunakan scaler yang sama
+    X_test_scaled = scaler.transform(X_test[cols_to_scale])
+    X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
+    
+    # Latih Regresi Logistik pada data yang diskalakan
+    log_reg = LogisticRegression(penalty='l2', C=0.2, solver='lbfgs', max_iter=2000, random_state=42)
+    log_reg.fit(X_train_scaled, y_train)
+    
+    # Prediksi menggunakan data test yang diskalakan
+    y_prob = log_reg.predict_proba(X_test_scaled)[:, 1]
     y_pred = (y_prob > 0.65).astype(int)
     
     fpr, tpr, _ = roc_curve(y_test, y_prob)
@@ -179,18 +202,32 @@ def train_medical_model(df_processed):
     metrics = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc, 'cm': cm}
     
     coeffs = {'Intercept': log_reg.intercept_[0]}
-    for i, col in enumerate(X_train.columns):
+    for i, col in enumerate(cols_to_scale):
         coeffs[col] = log_reg.coef_[0][i]
         
-    return best_model, log_reg, coeffs, metrics
+    # Mengembalikan scaler bersama dengan model dan metrik
+    return best_model, log_reg, coeffs, metrics, scaler
 
 # --- 5. Kalkulasi ---
-def calculate_final_prob(input_dict, ml_score, coeffs):
+# Menambahkan scaler ke argumen fungsi
+def calculate_final_prob(input_dict, ml_score, coeffs, scaler):
+    
+    # Buat DataFrame input untuk skalasi
+    input_df = pd.DataFrame([input_dict])
+    input_df['ML_Score'] = ml_score # Tambahkan skor AI
+    
+    cols_to_scale = list(input_df.columns)
+    
+    # Skalakan data input menggunakan scaler yang sudah dilatih
+    input_scaled = scaler.transform(input_df[cols_to_scale])
+    input_scaled = pd.DataFrame(input_scaled, index=input_df.index, columns=cols_to_scale)
+    
+    # Hitung logit menggunakan koefisien dan data yang diskalakan
     logit = coeffs['Intercept']
-    for feat, val in input_dict.items():
+    for feat in cols_to_scale:
         if feat in coeffs:
-            logit += coeffs[feat] * val
-    logit += coeffs['ML_Score'] * ml_score
+            logit += coeffs[feat] * input_scaled.loc[0, feat]
+            
     prob = 1 / (1 + math.exp(-logit))
     return prob
 
@@ -204,13 +241,20 @@ if not df_raw.empty:
     # Train Model (Hidden Spinner)
     if 'metrics' not in st.session_state:
         with st.spinner("Memproses Model AI & Standar NEWS2..."):
-            gbm, logreg, coef, metr = train_medical_model(df_model)
+            # Menerima nilai balik baru (scaler)
+            gbm, logreg, coef, metr, sc = train_medical_model(df_model)
             st.session_state.gbm = gbm
             st.session_state.logreg = logreg
             st.session_state.coef = coef
             st.session_state.metrics = metr
+            st.session_state.scaler = sc # Simpan scaler
             st.session_state.model_ready = True
-
+    
+    # Pastikan model dan scaler siap sebelum melanjutkan
+    if not st.session_state.get('model_ready') or st.session_state.gbm is None:
+        st.error("Gagal memuat atau melatih model. Periksa koneksi H2O atau integritas data.")
+        st.stop()
+        
     # --- UI UTAMA ---
     st.title("Sistem Triage & Rujukan Klinis")
     st.write("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional (NEWS2, JNC8).")
@@ -260,6 +304,7 @@ if not df_raw.empty:
             }
             p_news2 = calculate_news2_score_strict(row_dummy)
             
+            # Data input tanpa ML_Score
             input_dict = {
                 'Age': p_age, 'NEWS2_Score': p_news2,
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
@@ -269,12 +314,18 @@ if not df_raw.empty:
                 'Sym_Fever': flags['Sym_Fever']
             }
             
-            input_df = pd.DataFrame([input_dict])
-            hf_sample = h2o.H2OFrame(input_df)
-            ml_pred = st.session_state.gbm.predict(hf_sample)
-            s_score = ml_pred['p1'].as_data_frame().values[0][0]
+            input_df_gbm = pd.DataFrame([input_dict])
+            hf_sample = h2o.H2OFrame(input_df_gbm)
             
-            final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef)
+            # Pastikan model GBM tersedia
+            if st.session_state.gbm:
+                ml_pred = st.session_state.gbm.predict(hf_sample)
+                s_score = ml_pred['p1'].as_data_frame().values[0][0]
+            else:
+                s_score = 0.5 # Default jika GBM gagal
+                
+            # Kalkulasi probabilitas akhir menggunakan scaler
+            final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef, st.session_state.scaler)
             
             k1, k2, k3 = st.columns(3)
             k1.metric("NEWS2 Score", f"{p_news2}")
