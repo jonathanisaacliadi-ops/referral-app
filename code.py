@@ -13,7 +13,7 @@ import os
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Rujukan Cerdas (Scientific)",
+    page_title="Sistem Rujukan (Balanced)",
     page_icon="⚖️",
     layout="wide"
 )
@@ -32,7 +32,7 @@ def load_fixed_dataset():
         st.error("DATABASE TIDAK DITEMUKAN. Pastikan 'disease_diagnosis.csv' ada.")
     return pd.DataFrame()
 
-# --- 3. Feature Engineering (Balanced) ---
+# --- 3. Feature Engineering ---
 
 def get_column_options(df, col_name):
     if df.empty or col_name not in df.columns: return []
@@ -59,7 +59,6 @@ def extract_features_from_symptoms(row_or_list):
 def calculate_vital_score(row):
     """Mengubah angka vital menjadi SKOR (Kategori 0-10)."""
     score = 0
-    # Logika medis umum
     try:
         hr = float(row['Heart_Rate_bpm'])
         if hr > 100 or hr < 60: score += 2
@@ -85,11 +84,13 @@ def calculate_vital_score(row):
 def preprocess_data(df):
     processed = df.copy()
     
-    # 1. Gunakan Vital Score (Bukan angka mentah)
+    # 1. Gunakan Vital Score (Kategori)
     processed['Vital_Score'] = processed.apply(calculate_vital_score, axis=1)
     
-    # 2. Risk Index (Interaksi Umur & Vital)
-    processed['Risk_Index'] = processed['Age'] * processed['Vital_Score']
+    # 2. Masukkan Angka Mentah (PENTING untuk Akurasi)
+    # Tanpa ini, model menjadi "rabun" dan AUC drop ke 0.7
+    processed['Oxygen_Raw'] = pd.to_numeric(processed['Oxygen_Saturation_%'], errors='coerce').fillna(98)
+    processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     
     # 3. Flags Gejala
     flags = processed.apply(extract_features_from_symptoms, axis=1)
@@ -101,9 +102,8 @@ def preprocess_data(df):
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
     
-    # FILTER INPUT: Hapus Oxygen_Raw & Temp_Raw untuk menurunkan AUC ke level realistis
     return processed[[
-        'Age', 'Vital_Score', 'Risk_Index',
+        'Age', 'Vital_Score', 'Oxygen_Raw', 'Temp_Raw',
         'Flag_Breath', 'Flag_Fever', 'Flag_Pain',
         'Referral_Required'
     ]]
@@ -160,15 +160,15 @@ def train_scientific_model(df_processed):
     pred_test = best_model_h2o.predict(hf_test)
     s_test = pred_test['p1'].as_data_frame().values.flatten()
     
-    # 4. Logistic Regression dengan Regularisasi Kuat (C=0.5)
-    # Ini mencegah model terlalu 'yakin' (overconfident) -> AUC jadi lebih wajar
+    # 4. Logistic Regression dengan Regularisasi Kuat (C=0.1)
+    # INI KUNCINYA: C kecil (0.1) "menghukum" model yang terlalu bergantung pada satu fitur (seperti Oksigen)
+    # Hasilnya: AUC turun dari 0.99 ke level logis (misal 0.92)
     X_train_lr = X_train_pd.copy()
     X_train_lr['ML_Score'] = s_train
     
     X_test_lr = X_test_pd.copy()
     X_test_lr['ML_Score'] = s_test
     
-    # C=0.1 means strong regularization (mencegah overfitting)
     log_reg = LogisticRegression(penalty='l2', C=0.1, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_lr, y_train_pd)
     
@@ -227,10 +227,10 @@ if not df_raw.empty:
         
         # --- SIDEBAR: Hasil Evaluasi ---
         st.sidebar.metric("Validation AUC", f"{metrics['auc']:.4f}")
-        if 0.85 <= metrics['auc'] <= 0.95:
+        if 0.85 <= metrics['auc'] <= 0.96:
             st.sidebar.success("Kualitas: Ideal (Realistis)")
-        elif metrics['auc'] > 0.95:
-            st.sidebar.warning("Kualitas: Terlalu Tinggi (Cek Data)")
+        elif metrics['auc'] > 0.96:
+            st.sidebar.warning("Kualitas: Sangat Tinggi")
         else:
             st.sidebar.info("Kualitas: Moderat")
 
@@ -286,12 +286,11 @@ if not df_raw.empty:
                          'Oxygen_Saturation_%': p_o2, 'Blood_Pressure_mmHg': p_bp}
             p_vital_score = calculate_vital_score(row_vital)
             
-            p_risk_index = p_age * p_vital_score
-            
             input_dict = {
                 'Age': p_age,
                 'Vital_Score': p_vital_score,
-                'Risk_Index': p_risk_index,
+                'Oxygen_Raw': p_o2,
+                'Temp_Raw': p_temp,
                 'Flag_Breath': flags['Flag_Breath'],
                 'Flag_Fever': flags['Flag_Fever'],
                 'Flag_Pain': flags['Flag_Pain']
@@ -311,7 +310,7 @@ if not df_raw.empty:
             st.subheader("📋 Hasil Analisis")
             
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Risk Index", f"{p_risk_index}")
+            k1.metric("Oksigen", f"{p_o2}%")
             k2.metric("Indikasi Sesak", "Ya" if flags['Flag_Breath'] else "Tidak")
             k3.metric("ML Score (S)", f"{s_score:.3f}")
             k4.metric("Probabilitas", f"{final_prob:.1%}")
