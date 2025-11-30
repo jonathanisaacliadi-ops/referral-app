@@ -4,3 +4,4 @@ numpy
 scikit-learn
 h2o
 joblib
+matplotlib
