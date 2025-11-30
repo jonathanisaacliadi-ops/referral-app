@@ -150,7 +150,7 @@ def train_medical_model(df_processed):
     aml = H2OAutoML(
         max_models=3, 
         seed=42, 
-        include_algos=['DRF', 'GBM'], 
+        include_algos=['GBM'], 
         max_runtime_secs=60,
         verbosity='error',
         balance_classes=True
