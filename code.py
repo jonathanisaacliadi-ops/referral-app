@@ -16,7 +16,7 @@ st.set_page_config(
     page_title="Sistem Triage Medis (NEWS2)",
     page_icon="🩺",
     layout="wide",
-    initial_sidebar_state="collapsed" # Menyembunyikan sidebar secara default
+    initial_sidebar_state="collapsed"
 )
 
 # --- 2. Fungsi Load Data ---
@@ -100,7 +100,6 @@ def calculate_news2_score_strict(row):
 def preprocess_data(df):
     processed = df.copy()
     
-    # Parsing BP
     bp_split = processed['Blood_Pressure_mmHg'].astype(str).str.split('/', expand=True)
     processed['Sys_Raw'] = pd.to_numeric(bp_split[0], errors='coerce').fillna(120)
     if bp_split.shape[1] > 1:
@@ -108,23 +107,17 @@ def preprocess_data(df):
     else:
         processed['Dia_Raw'] = 80
 
-    # Raw Vitals
     processed['Oxygen_Raw'] = pd.to_numeric(processed['Oxygen_Saturation_%'], errors='coerce').fillna(98)
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
-    # NEWS2 Score
     processed['NEWS2_Score'] = processed.apply(calculate_news2_score_strict, axis=1)
-    
-    # Flag HTN Crisis (AHA Guideline)
     processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
     
-    # Gejala
     flags = processed.apply(extract_features_from_symptoms, axis=1)
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    # Target
     processed['Referral_Required'] = processed.apply(
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
@@ -211,14 +204,12 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
 
 # --- MAIN APP ---
 
-# Load Data & Train Model (Background)
 df_raw = load_fixed_dataset()
 
 if not df_raw.empty:
     df_model = preprocess_data(df_raw)
     
     if 'model_ready' not in st.session_state:
-        # Tampilkan spinner hanya saat loading awal
         with st.spinner("Menginisialisasi Model Medis (NEWS2)..."):
             gbm, logreg, coef, metr = train_medical_model(df_model)
             st.session_state.gbm = gbm
@@ -227,15 +218,11 @@ if not df_raw.empty:
             st.session_state.metrics = metr
             st.session_state.model_ready = True
 
-    # --- UI UTAMA (LAYAR PENUH) ---
+    # --- UI UTAMA ---
     st.title("🏥 Sistem Triage & Rujukan Klinis")
-    st.markdown("""
-    Aplikasi ini menggunakan standar **NEWS2 (National Early Warning Score)** dan **Machine Learning** 
-    untuk menentukan apakah pasien memerlukan rujukan ke Rumah Sakit.
-    """)
+    st.markdown("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional.")
     st.markdown("---")
 
-    # Layout Input
     col1, col2 = st.columns([1, 1])
 
     with col1:
@@ -266,7 +253,6 @@ if not df_raw.empty:
         st.subheader("📋 Hasil Analisis")
         
         if submit_btn and st.session_state.get('model_ready'):
-            # Parsing
             try:
                 if '/' in p_bp: p_sys, p_dia = map(float, p_bp.split('/'))
                 else: p_sys, p_dia = 120.0, 80.0
@@ -275,14 +261,12 @@ if not df_raw.empty:
             valid_symptoms = [s for s in [p_sym1, p_sym2, p_sym3] if s != "-"]
             flags = extract_features_from_symptoms(valid_symptoms)
             
-            # NEWS2 Calculation
             row_dummy = {
                 'Heart_Rate_bpm': p_hr, 'Body_Temperature_C': p_temp, 
                 'Oxygen_Saturation_%': p_o2, 'Sys_Raw': p_sys, 'Dia_Raw': p_dia
             }
             p_news2 = calculate_news2_score_strict(row_dummy)
             
-            # Prediction
             input_dict = {
                 'Age': p_age, 'NEWS2_Score': p_news2,
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
@@ -300,28 +284,27 @@ if not df_raw.empty:
             
             final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef)
             
-            # Display Results
+            # --- Hasil Metrics ---
             k1, k2, k3 = st.columns(3)
-            k1.metric("NEWS2 Score", f"{p_news2}")
-            k2.metric("ML Confidence (S)", f"{s_score:.3f}")
+            k1.metric("NEWS2 Score", f"{p_news2}", help="National Early Warning Score")
+            k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             k3.metric("Risiko Rujukan", f"{final_prob:.1%}")
             
             threshold = 0.65
-            
             if final_prob > threshold:
-                st.error("🚨 **RUJUKAN DIPERLUKAN**")
+                st.error(f"🚨 **RUJUKAN DIPERLUKAN**")
                 st.write("**Indikasi Klinis:**")
                 if p_news2 >= 5: st.warning(f"- Skor NEWS2 {p_news2} (Bahaya Klinis Akut)")
-                if p_sys <= 90: st.warning("- Hipotensi/Syok")
+                if p_sys <= 90: st.warning("- Hipotensi (Risiko Syok)")
                 if p_o2 <= 91: st.warning("- Hipoksia Berat")
                 if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
             else:
                 st.success("✅ **TIDAK PERLU RUJUKAN**")
-                st.write("Pasien stabil. Lanjutkan rawat jalan.")
+                st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
         else:
             st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
 
-    # --- FOOTER: DETAIL MODEL (COLLAPSIBLE) ---
+    # --- FOOTER: DETAIL MODEL ---
     st.markdown("---")
     with st.expander("🔍 Detail Model, Rumus & Data (Klik untuk membuka)", expanded=False):
         tab1, tab2, tab3 = st.tabs(["📊 Performa & Metrik", "🧮 Rumus & Bobot", "💾 Dataset"])
@@ -329,46 +312,63 @@ if not df_raw.empty:
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
 
+        # --- MAPPING NAMA VARIABEL (TRANSLATOR) ---
+        variable_map = {
+            'Intercept': 'Intercept (Nilai Dasar)',
+            'Age': 'Usia Pasien (Age)',
+            'NEWS2_Score': 'Skor Peringatan Dini (NEWS2_Score)',
+            'Sys_Raw': 'Tekanan Darah Sistolik (Sys_Raw)',
+            'Dia_Raw': 'Tekanan Darah Diastolik (Dia_Raw)',
+            'Oxygen_Raw': 'Saturasi Oksigen (Oxygen_Raw)',
+            'Temp_Raw': 'Suhu Tubuh (Temp_Raw)',
+            'Heart_Raw': 'Detak Jantung (Heart_Raw)',
+            'Flag_HTN_Crisis': 'Indikator Krisis Hipertensi (Flag_HTN_Crisis)',
+            'Sym_Dyspnea': 'Gejala Sesak Napas (Sym_Dyspnea)',
+            'Sym_ChestPain': 'Gejala Nyeri Dada (Sym_ChestPain)',
+            'Sym_Fever': 'Gejala Demam (Sym_Fever)',
+            'ML_Score': 'Skor Prediksi AI (ML_Score)'
+        }
+
         with tab1:
             if metrics:
                 c1, c2 = st.columns(2)
                 with c1:
                     st.metric("Skor AUC (Akurasi)", f"{metrics['auc']:.4f}")
-                    st.caption("AUC menggambarkan kemampuan model membedakan pasien gawat vs stabil.")
-                    
-                    # Plot ROC
                     fig, ax = plt.subplots(figsize=(4, 3))
                     ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
                     ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
                     ax.set_title('ROC Curve')
-                    ax.set_xlabel('False Positive Rate')
-                    ax.set_ylabel('True Positive Rate')
                     st.pyplot(fig)
-                
                 with c2:
                     st.write("**Confusion Matrix:**")
                     fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
                     sns.heatmap(metrics['cm'], annot=True, fmt='d', cmap='Blues', cbar=False, ax=ax_cm)
-                    ax_cm.set_xlabel('Prediksi Model')
-                    ax_cm.set_ylabel('Data Aktual')
                     st.pyplot(fig_cm)
 
         with tab2:
             if coeffs:
-                st.markdown("#### Rumus Logistic Regression")
-                formula_latex = r"P(Y=1) = \frac{1}{1 + e^{-(\beta_0 + \sum \beta_i X_i)}}"
-                st.latex(formula_latex)
-                
                 st.markdown("#### Bobot Variabel ($\beta_i$)")
-                st.caption("Semakin besar nilai bobot, semakin besar pengaruh variabel tersebut terhadap keputusan rujukan.")
+                st.caption("Faktor yang paling mempengaruhi keputusan AI.")
                 
-                # Bar Chart Bobot
+                # Buat DataFrame
                 coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
-                coef_sorted = coef_df.drop('Intercept').sort_values(by='Bobot', ascending=False)
-                st.bar_chart(coef_sorted)
                 
-                st.write("**Nilai Detail:**")
-                st.dataframe(coef_sorted.style.format("{:.4f}"))
+                # Filter Intercept agar grafik lebih rapi
+                plot_df = coef_df.drop('Intercept')
+                
+                # Ganti nama Index menggunakan Mapping
+                plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
+                
+                # Sortir
+                plot_df = plot_df.sort_values(by='Bobot', ascending=False)
+                
+                # Tampilkan Grafik
+                st.bar_chart(plot_df)
+                
+                # Tampilkan Tabel
+                # Mapping ulang untuk tabel lengkap (termasuk intercept jika mau)
+                coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
+                st.dataframe(coef_df.style.format("{:.4f}"))
 
         with tab3:
             st.markdown(f"**Total Data:** {len(df_raw)} Pasien")
