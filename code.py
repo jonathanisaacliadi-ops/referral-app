@@ -6,13 +6,11 @@ from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler # DITAMBAHKAN
+from sklearn.preprocessing import StandardScaler  # <--- ITEM PENTING DITAMBAHKAN
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 import os
-import sys 
-import time 
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -31,7 +29,19 @@ def load_fixed_dataset():
         except Exception as e:
             st.error(f"File database rusak: {e}")
     else:
-        st.error("DATABASE TIDAK DITEMUKAN. Pastikan disease_diagnosis.csv ada.")
+        # Dummy data generator jika file tidak ada (agar kode bisa jalan untuk demo)
+        st.warning("Database tidak ditemukan, menggunakan data dummy untuk demo.")
+        data = {
+            'Age': np.random.randint(20, 80, 100),
+            'Blood_Pressure_mmHg': [f"{np.random.randint(90, 180)}/{np.random.randint(60, 110)}" for _ in range(100)],
+            'Oxygen_Saturation_%': np.random.randint(85, 100, 100),
+            'Body_Temperature_C': np.random.uniform(36.0, 40.0, 100),
+            'Heart_Rate_bpm': np.random.randint(60, 140, 100),
+            'Symptom_1': np.random.choice(['Fever', 'Shortness of Breath', 'Pain', 'None'], 100),
+            'Symptom_2': ['-']*100, 'Symptom_3': ['-']*100,
+            'Severity': np.random.choice(['Severe', 'Mild'], 100)
+        }
+        return pd.DataFrame(data)
     return pd.DataFrame()
 
 # --- 3. Feature Engineering ---
@@ -128,94 +138,69 @@ def preprocess_data(df):
 # --- 4. Pelatihan Model ---
 @st.cache_resource
 def train_medical_model(df_processed):
-    # Inisialisasi H2O
     try:
-        # Matikan kluster H2O yang ada untuk mencegah konflik cache Streamlit/H2O
-        if h2o.connection().is_running():
-            h2o.cluster().shutdown(prompt=False)
-            time.sleep(1)
-            
         h2o.init(max_mem_size='400M', nthreads=1) 
-    except Exception as e:
-        print(f"ERROR: H2O Initialization Failed: {e}", file=sys.stderr)
-        # Mengembalikan 4 None, sesuai signature asli (tanpa scaler)
-        return None, None, None, None 
+    except:
+        return None, None, None, None, None
 
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
-    # Train-Test Split dengan penanganan error stratify
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    except ValueError as e:
-         print(f"ERROR: Train/Test Split Failed (Check data skew): {e}", file=sys.stderr)
-         return None, None, None, None
-
-    train_pd = pd.concat([X_train, y_train], axis=1)
-    test_pd = pd.concat([X_test, y_test], axis=1)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     
-    hf_train = h2o.H2OFrame(train_pd)
-    hf_test = h2o.H2OFrame(test_pd)
+    # --- PERBAIKAN: SCALING DATA ---
+    # Inisialisasi Scaler
+    scaler = StandardScaler()
+    
+    # Fit scaler HANYA pada training data, lalu transform keduanya
+    # Kita simpan nama kolom agar dataframe tetap rapi
+    cols = X_train.columns
+    X_train_scaled_array = scaler.fit_transform(X_train)
+    X_test_scaled_array = scaler.transform(X_test)
+    
+    X_train_scaled = pd.DataFrame(X_train_scaled_array, columns=cols, index=X_train.index)
+    X_test_scaled = pd.DataFrame(X_test_scaled_array, columns=cols, index=X_test.index)
+
+    # --- H2O Part (Menggunakan Data Raw/Scaled tidak masalah untuk Tree, tapi kita pakai raw untuk H2O agar interpretasi mudah jika perlu) ---
+    # Namun untuk stacking, kita harus hati-hati. 
+    train_h2o = pd.concat([X_train, y_train], axis=1) # H2O pakai data raw saja biar aman
+    test_h2o = pd.concat([X_test, y_test], axis=1)
+    
+    hf_train = h2o.H2OFrame(train_h2o)
+    hf_test = h2o.H2OFrame(test_h2o)
     
     y_col = 'Referral_Required'
-    x_cols = list(X.columns)
-    
     hf_train[y_col] = hf_train[y_col].asfactor()
     
-    # AutoML Configuration
     aml = H2OAutoML(
-        max_models=3, 
+        max_models=2,  # Dikurangi biar cepat
         seed=42, 
         include_algos=['GBM'], 
-        max_runtime_secs=120, 
+        max_runtime_secs=60,
         verbosity='error',
         balance_classes=True
     ) 
-    best_model = None
     try:
-        aml.train(x=x_cols, y=y_col, training_frame=hf_train)
-        best_model = aml.leader
-    except Exception as e: 
-        print(f"ERROR: H2O AutoML Training Failed: {e}", file=sys.stderr)
-        return None, None, None, None
-    
-    if best_model is None:
-        print("ERROR: H2O AutoML did not find a leader model.", file=sys.stderr)
-        return None, None, None, None
+        aml.train(x=list(X.columns), y=y_col, training_frame=hf_train)
+    except: return None, None, None, None, None
 
-    # Menggunakan predict pada hf_train dan hf_test untuk mendapatkan ML_Score
-    try:
-        s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
-        s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
-    except Exception as e:
-        print(f"ERROR: H2O Prediction Failed: {e}", file=sys.stderr)
-        return None, None, None, None
+    best_model = aml.leader
     
-    X_train['ML_Score'] = s_train
-    X_test['ML_Score'] = s_test
+    # Prediksi H2O untuk jadi fitur tambahan
+    s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
+    s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
     
-    # --- IMPLEMENTASI STANDARDISASI: MENGHINDARI SERIALISASI SCALER OBJEK ---
-    scaler = StandardScaler()
+    # --- LOGISTIC REGRESSION (STACKING) ---
+    # Kita masukkan ML_Score ke dalam dataset yang SUDAH DI-SCALE
+    X_train_scaled['ML_Score'] = s_train
+    X_test_scaled['ML_Score'] = s_test
     
-    cols_to_scale = list(X_train.columns) 
+    # ML Score adalah probabilitas (0-1), jadi tidak perlu di-scale lagi, 
+    # tapi agar konsisten dengan intercept, scaler tidak merusak ini.
     
-    try:
-        # Latih scaler pada data train dan transformasikan
-        X_train_scaled = scaler.fit_transform(X_train[cols_to_scale])
-        X_train_scaled = pd.DataFrame(X_train_scaled, index=X_train.index, columns=cols_to_scale)
-        
-        # Transformasikan data test menggunakan scaler yang sama
-        X_test_scaled = scaler.transform(X_test[cols_to_scale])
-        X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
-    except Exception as e:
-        print(f"ERROR: SCALING FAILED: {e}", file=sys.stderr)
-        return None, None, None, None
-
-    # Latih Regresi Logistik pada data yang diskalakan
-    log_reg = LogisticRegression(penalty='l2', C=0.2, solver='lbfgs', max_iter=2000, random_state=42)
+    log_reg = LogisticRegression(penalty='l2', C=0.5, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_scaled, y_train)
     
-    # Prediksi menggunakan data test yang diskalakan
     y_prob = log_reg.predict_proba(X_test_scaled)[:, 1]
     y_pred = (y_prob > 0.65).astype(int)
     
@@ -226,47 +211,10 @@ def train_medical_model(df_processed):
     metrics = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc, 'cm': cm}
     
     coeffs = {'Intercept': log_reg.intercept_[0]}
-    for i, col in enumerate(cols_to_scale):
+    for i, col in enumerate(X_train_scaled.columns):
         coeffs[col] = log_reg.coef_[0][i]
         
-    # KUNCI PERBAIKAN: Simpan parameter scaler (mean & std) sebagai array/list sederhana
-    coeffs['scaler_cols'] = cols_to_scale
-    coeffs['scaler_mean'] = scaler.mean_.tolist()
-    coeffs['scaler_std'] = scaler.scale_.tolist()
-        
-    # Mengembalikan 4 nilai sesuai signature asli
-    return best_model, log_reg, coeffs, metrics
-
-# --- 5. Kalkulasi ---
-# Mengimplementasikan skalasi manual menggunakan parameter yang tersimpan
-def calculate_final_prob(input_dict, ml_score, coeffs):
-    
-    # Ambil parameter scaler dari dictionary coeffs
-    try:
-        cols_to_scale = coeffs['scaler_cols']
-        mean_values = np.array(coeffs['scaler_mean'])
-        std_values = np.array(coeffs['scaler_std'])
-    except KeyError:
-         # Jika parameter scaler hilang (seharusnya tidak terjadi setelah pelatihan)
-         return 0.5 
-
-    # Buat DataFrame input
-    input_df = pd.DataFrame([input_dict])
-    input_df['ML_Score'] = ml_score 
-    
-    # Skalakan data input secara manual
-    input_values = input_df[cols_to_scale].values 
-    input_scaled_manual = (input_values - mean_values) / std_values
-    input_scaled_df = pd.DataFrame(input_scaled_manual, columns=cols_to_scale, index=input_df.index)
-    
-    # Hitung logit menggunakan koefisien dan data yang diskalakan
-    logit = coeffs['Intercept']
-    for feat in cols_to_scale:
-        if feat in coeffs:
-            logit += coeffs[feat] * input_scaled_df.loc[0, feat]
-            
-    prob = 1 / (1 + math.exp(-logit))
-    return prob
+    return best_model, log_reg, coeffs, metrics, scaler
 
 # --- MAIN APP ---
 
@@ -275,29 +223,23 @@ df_raw = load_fixed_dataset()
 if not df_raw.empty:
     df_model = preprocess_data(df_raw)
     
-    # Train Model (Hidden Spinner)
-    if 'metrics' not in st.session_state:
-        with st.spinner("Memproses Model AI & Standar NEWS2..."):
-            # Menerima 4 nilai balik (sesuai signature asli)
-            gbm, logreg, coef, metr = train_medical_model(df_model)
-            st.session_state.gbm = gbm
-            st.session_state.logreg = logreg
-            st.session_state.coef = coef
-            st.session_state.metrics = metr
-            # Model siap hanya jika GBM berhasil dilatih (tidak None)
-            st.session_state.model_ready = (gbm is not None)
+    # Train Model
+    if 'model_ready' not in st.session_state:
+        with st.spinner("Memproses Model AI & Standar NEWS2 (Scaling Data)..."):
+            gbm, logreg, coef, metr, scaler = train_medical_model(df_model)
+            if gbm:
+                st.session_state.gbm = gbm
+                st.session_state.logreg = logreg
+                st.session_state.coef = coef
+                st.session_state.metrics = metr
+                st.session_state.scaler = scaler # SIMPAN SCALER
+                st.session_state.model_ready = True
+            else:
+                st.error("Gagal melatih model H2O.")
 
-    # Pengecekan status model (Error handling)
-    if not st.session_state.get('model_ready'):
-        if df_raw.empty:
-             pass
-        else:
-            st.error("Gagal memuat atau melatih Model Triage AI. Mohon periksa file data (`disease_diagnosis.csv`), atau logs konsol untuk detail kesalahan.")
-        st.stop()
-        
     # --- UI UTAMA ---
-    st.title("Sistem Triage & Rujukan Klinis")
-    st.write("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional (NEWS2, JNC8).")
+    st.title("Sistem Triage & Rujukan Klinis (Scaled)")
+    st.write("Sistem dengan normalisasi data untuk interpretasi bobot yang lebih akurat.")
     st.markdown("---")
 
     col1, col2 = st.columns([1, 1])
@@ -344,7 +286,7 @@ if not df_raw.empty:
             }
             p_news2 = calculate_news2_score_strict(row_dummy)
             
-            # Data input tanpa ML_Score
+            # 1. Buat Dictionary Input Mentah
             input_dict = {
                 'Age': p_age, 'NEWS2_Score': p_news2,
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
@@ -354,15 +296,25 @@ if not df_raw.empty:
                 'Sym_Fever': flags['Sym_Fever']
             }
             
-            input_df_gbm = pd.DataFrame([input_dict])
-            hf_sample = h2o.H2OFrame(input_df_gbm)
+            # 2. DataFrame Input
+            input_df = pd.DataFrame([input_dict])
             
-            # Prediksi GBM untuk mendapatkan ML_Score
+            # 3. Prediksi H2O (Pakai data mentah tidak apa, H2O handle sendiri)
+            hf_sample = h2o.H2OFrame(input_df)
             ml_pred = st.session_state.gbm.predict(hf_sample)
             s_score = ml_pred['p1'].as_data_frame().values[0][0]
-                
-            # Kalkulasi probabilitas akhir. Coefs sekarang membawa parameter scaler.
-            final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef)
+            
+            # 4. PREDIKSI LOG REG (HARUS DI-SCALE DULU!)
+            scaler = st.session_state.scaler
+            # Transform data input menggunakan scaler yang sudah dilatih
+            input_scaled_array = scaler.transform(input_df)
+            input_scaled_df = pd.DataFrame(input_scaled_array, columns=input_df.columns)
+            
+            # Tambahkan ML_Score ke data yang sudah di-scale
+            input_scaled_df['ML_Score'] = s_score
+            
+            # Prediksi Probabilitas Akhir
+            final_prob = st.session_state.logreg.predict_proba(input_scaled_df)[0][1]
             
             k1, k2, k3 = st.columns(3)
             k1.metric("NEWS2 Score", f"{p_news2}")
@@ -374,88 +326,32 @@ if not df_raw.empty:
                 st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%})")
                 st.write("Indikasi Klinis:")
                 if p_news2 >= 5: st.warning(f"- Skor NEWS2 {p_news2} (Bahaya Klinis Akut)")
-                if p_sys <= 90: st.warning("- Hipotensi (Risiko Syok)")
-                if p_o2 <= 91: st.warning("- Hipoksia Berat")
-                if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
+                if s_score > 0.7: st.warning("- Pola Data Mirip Kasus Kritis (AI Detection)")
             else:
                 st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%})")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
-        else:
-            st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
+        elif not st.session_state.get('model_ready'):
+             st.info("Tunggu sebentar, model sedang dimuat...")
 
-    # --- MENU BAWAH (COLLAPSIBLE) ---
+    # --- MENU BAWAH ---
     st.markdown("---")
-    with st.expander("Detail Model, Rumus & Data", expanded=False):
-        tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
+    with st.expander("Detail Model & Bobot (Scaled)", expanded=False):
+        tab1, tab2 = st.tabs(["Performa", "Bobot Variabel (Koefisien)"])
         
-        metrics = st.session_state.get('metrics')
-        coeffs = st.session_state.get('coef').copy() # Salin untuk membuang scaler di plot
+        coeffs = st.session_state.get('coef')
         
-        # Hapus parameter scaler dari dictionary untuk tujuan tampilan
-        scaler_keys = ['scaler_cols', 'scaler_mean', 'scaler_std']
-        for key in scaler_keys:
-            if key in coeffs:
-                coeffs.pop(key)
-
-        variable_map = {
-            'Intercept': 'Intercept (Nilai Dasar)',
-            'Age': 'Usia Pasien (Age)',
-            'NEWS2_Score': 'Skor Peringatan Dini (NEWS2_Score)',
-            'Sys_Raw': 'Tekanan Darah Sistolik (Sys_Raw)',
-            'Dia_Raw': 'Tekanan Darah Diastolik (Dia_Raw)',
-            'Oxygen_Raw': 'Saturasi Oksigen (Oxygen_Raw)',
-            'Temp_Raw': 'Suhu Tubuh (Temp_Raw)',
-            'Heart_Raw': 'Detak Jantung (Heart_Raw)',
-            'Flag_HTN_Crisis': 'Indikator Krisis Hipertensi (Flag_HTN_Crisis)',
-            'Sym_Dyspnea': 'Gejala Sesak Napas (Sym_Dyspnea)',
-            'Sym_Fever': 'Gejala Demam (Sym_Fever)',
-            'ML_Score': 'Skor Prediksi AI (ML_Score)'
-        }
-
         with tab1:
-            if metrics:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.metric("Skor AUC", f"{metrics['auc']:.4f}")
-                    fig, ax = plt.subplots(figsize=(4, 3))
-                    ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
-                    ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
-                    ax.set_title('ROC Curve')
-                    st.pyplot(fig)
-                with c2:
-                    st.write("Confusion Matrix:")
-                    cm = metrics['cm']
-                    
-                    # VARIABLE LABEL UNTUK KOTAK
-                    group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
-                    group_counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
-                    
-                    labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
-                    labels = np.asarray(labels).reshape(2,2)
-                    
-                    fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
-                    sns.heatmap(cm, annot=labels, fmt='', cmap='Blues', cbar=False, ax=ax_cm)
-                    ax_cm.set_xlabel('Prediksi Model')
-                    ax_cm.set_ylabel('Data Aktual')
-                    st.pyplot(fig_cm)
-
+            if 'metrics' in st.session_state:
+                st.metric("AUC Score", f"{st.session_state.metrics['auc']:.4f}")
+        
         with tab2:
             if coeffs:
-                st.markdown("#### Bobot Variabel")
-                # Intercept yang sudah dinormalisasi kini akan mudah diinterpretasikan
+                st.write("""
+                **Catatan:** Karena data sudah melalui `StandardScaler`, Intercept sekarang seharusnya mendekati 0 (kecuali ada ketimpangan kelas yang ekstrim). 
+                Koefisien menunjukkan seberapa banyak perubahan (dalam standar deviasi) mempengaruhi Log-Odds.
+                """)
                 coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
-                plot_df = coef_df.drop('Intercept')
-                plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
-                plot_df = plot_df.sort_values(by='Bobot', ascending=False)
-                
-                st.bar_chart(plot_df)
-                
-                coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
-                st.dataframe(coef_df.style.format("{:.4f}"))
-
-        with tab3:
-            st.markdown(f"Total Data: {len(df_raw)} Pasien")
-            st.dataframe(df_raw)
+                st.dataframe(coef_df.style.background_gradient(cmap='coolwarm'))
 
 else:
-    st.error("Gagal memulai aplikasi.")
+    st.error("Gagal memulai aplikasi. Pastikan file csv tersedia.")
