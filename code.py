@@ -11,17 +11,12 @@ import seaborn as sns
 import math
 import os
 
-# --- 1. Konfigurasi Halaman (Standar) ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (Standard)",
-    page_icon="🏥",
+    page_title="Sistem Triage Medis",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# (CSS Custom telah dihapus sesuai permintaan)
-
-# --- 2. Fungsi Load Data ---
 @st.cache_data
 def load_fixed_dataset():
     local_path = "disease_diagnosis.csv"
@@ -32,10 +27,8 @@ def load_fixed_dataset():
         except Exception as e:
             st.error(f"File database rusak: {e}")
     else:
-        st.error("DATABASE TIDAK DITEMUKAN. Pastikan 'disease_diagnosis.csv' ada.")
+        st.error("DATABASE TIDAK DITEMUKAN. Pastikan disease_diagnosis.csv ada.")
     return pd.DataFrame()
-
-# --- 3. Feature Engineering ---
 
 def get_column_options(df, col_name):
     if df.empty or col_name not in df.columns: return []
@@ -60,7 +53,6 @@ def extract_features_from_symptoms(row_or_list):
 
 def calculate_news2_score_strict(row):
     score = 0
-    # Saturasi Oksigen
     try:
         o2 = float(row['Oxygen_Saturation_%'])
         if o2 <= 91: score += 3
@@ -68,7 +60,6 @@ def calculate_news2_score_strict(row):
         elif 94 <= o2 <= 95: score += 1
     except: pass
 
-    # Tekanan Darah Sistolik
     try:
         if isinstance(row, dict): sys = float(row['Sys_Raw'])
         else: sys = float(str(row['Blood_Pressure_mmHg']).split('/')[0])
@@ -78,7 +69,6 @@ def calculate_news2_score_strict(row):
         elif 101 <= sys <= 110: score += 1
     except: pass
 
-    # Nadi
     try:
         hr = float(row['Heart_Rate_bpm'])
         if hr <= 40: score += 3
@@ -88,7 +78,6 @@ def calculate_news2_score_strict(row):
         elif hr >= 131: score += 3
     except: pass
 
-    # Suhu
     try:
         t = float(row['Body_Temperature_C'])
         if t <= 35.0: score += 3
@@ -102,7 +91,6 @@ def calculate_news2_score_strict(row):
 def preprocess_data(df):
     processed = df.copy()
     
-    # Parsing BP
     bp_split = processed['Blood_Pressure_mmHg'].astype(str).str.split('/', expand=True)
     processed['Sys_Raw'] = pd.to_numeric(bp_split[0], errors='coerce').fillna(120)
     if bp_split.shape[1] > 1:
@@ -110,23 +98,17 @@ def preprocess_data(df):
     else:
         processed['Dia_Raw'] = 80
 
-    # Raw Vitals
     processed['Oxygen_Raw'] = pd.to_numeric(processed['Oxygen_Saturation_%'], errors='coerce').fillna(98)
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
-    # NEWS2 Score
     processed['NEWS2_Score'] = processed.apply(calculate_news2_score_strict, axis=1)
-    
-    # Flag HTN Crisis
     processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
     
-    # Gejala
     flags = processed.apply(extract_features_from_symptoms, axis=1)
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    # Target
     processed['Referral_Required'] = processed.apply(
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
@@ -139,7 +121,6 @@ def preprocess_data(df):
         'Referral_Required'
     ]]
 
-# --- 4. Pelatihan Model ---
 @st.cache_resource
 def train_medical_model(df_processed):
     try:
@@ -201,7 +182,6 @@ def train_medical_model(df_processed):
         
     return best_model, log_reg, coeffs, metrics
 
-# --- 5. Kalkulasi ---
 def calculate_final_prob(input_dict, ml_score, coeffs):
     logit = coeffs['Intercept']
     for feat, val in input_dict.items():
@@ -210,8 +190,6 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     logit += coeffs['ML_Score'] * ml_score
     prob = 1 / (1 + math.exp(-logit))
     return prob
-
-# --- MAIN APP ---
 
 df_raw = load_fixed_dataset()
 
@@ -222,10 +200,10 @@ if not df_raw.empty:
     
     df_model = preprocess_data(df_raw)
 
-    st.sidebar.title("⚙️ Status Validasi")
+    st.sidebar.title("Status Validasi")
     
     if 'metrics' not in st.session_state:
-        with st.spinner("Menerapkan Standar NEWS2 & AHA Guidelines..."):
+        with st.spinner("Memproses Model..."):
             gbm, logreg, coef, metr = train_medical_model(df_model)
             st.session_state.gbm = gbm
             st.session_state.logreg = logreg
@@ -235,19 +213,16 @@ if not df_raw.empty:
     
     if st.session_state.get('model_ready'):
         metrics = st.session_state.metrics
-        coeffs = st.session_state.coef
         st.sidebar.metric("Akurasi Medis (AUC)", f"{metrics['auc']:.4f}")
-        st.sidebar.caption("AUC menggambarkan kemampuan model.")
 
-    # --- UI UTAMA ---
-    st.title("🏥 Sistem Triage & Rujukan Klinis (NEWS2)")
+    st.title("Sistem Triage & Rujukan Klinis")
     st.markdown("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional.")
     st.markdown("---")
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader("📝 Data Klinis Pasien")
+        st.subheader("Data Klinis Pasien")
         with st.form("referral_form"):
             c1, c2 = st.columns(2)
             with c1:
@@ -255,10 +230,10 @@ if not df_raw.empty:
                 p_hr = st.number_input("Nadi (bpm)", 30, 250, 80)
                 p_bp = st.text_input("Tekanan Darah (mmHg)", "120/80")
             with c2:
-                p_temp = st.number_input("Suhu Tubuh (°C)", 34.0, 43.0, 36.5)
+                p_temp = st.number_input("Suhu Tubuh (C)", 34.0, 43.0, 36.5)
                 p_o2 = st.number_input("Saturasi Oksigen (%)", 50, 100, 98)
 
-            st.write("**Keluhan & Gejala**")
+            st.write("Keluhan & Gejala")
             sc1, sc2, sc3 = st.columns(3)
             with sc1: p_sym1 = st.selectbox("Gejala 1", options=s1_options)
             with sc2: p_sym2 = st.selectbox("Gejala 2", options=s2_options)
@@ -267,10 +242,9 @@ if not df_raw.empty:
             submit_btn = st.form_submit_button("Analisis Keputusan", type="primary")
 
     with col2:
-        st.subheader("📋 Hasil Analisis")
+        st.subheader("Hasil Analisis")
         
         if submit_btn and st.session_state.get('model_ready'):
-            # Parsing
             try:
                 if '/' in p_bp: p_sys, p_dia = map(float, p_bp.split('/'))
                 else: p_sys, p_dia = 120.0, 80.0
@@ -279,14 +253,12 @@ if not df_raw.empty:
             valid_symptoms = [s for s in [p_sym1, p_sym2, p_sym3] if s != "-"]
             flags = extract_features_from_symptoms(valid_symptoms)
             
-            # NEWS2 Calculation
             row_dummy = {
                 'Heart_Rate_bpm': p_hr, 'Body_Temperature_C': p_temp, 
                 'Oxygen_Saturation_%': p_o2, 'Sys_Raw': p_sys, 'Dia_Raw': p_dia
             }
             p_news2 = calculate_news2_score_strict(row_dummy)
             
-            # Prediction
             input_dict = {
                 'Age': p_age, 'NEWS2_Score': p_news2,
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
@@ -304,37 +276,32 @@ if not df_raw.empty:
             
             final_prob = calculate_final_prob(input_dict, s_score, st.session_state.coef)
             
-            # Tampilan Metrics
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("NEWS2 Score", f"{p_news2}", help="National Early Warning Score")
+            k1, k2, k3 = st.columns(3)
+            k1.metric("NEWS2 Score", f"{p_news2}")
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
-            k3.metric("ML Score (S)", f"{s_score:.3f}")
-            k4.metric("Probabilitas", f"{final_prob:.1%}")
+            k3.metric("Risiko Rujukan", f"{final_prob:.1%}")
             
-            # Logika Tampilan (Tanpa CSS Custom)
             threshold = 0.65
             if final_prob > threshold:
-                st.error(f"🚨 **RUJUKAN DIPERLUKAN** (Risiko {final_prob:.1%})")
-                st.write("**Indikasi Klinis:**")
+                st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%})")
+                st.write("Indikasi Klinis:")
                 if p_news2 >= 5: st.warning(f"- Skor NEWS2 {p_news2} (Bahaya Klinis Akut)")
                 if p_sys <= 90: st.warning("- Hipotensi (Risiko Syok)")
                 if p_o2 <= 91: st.warning("- Hipoksia Berat")
                 if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
             else:
-                st.success(f"✅ **TIDAK PERLU RUJUKAN** (Risiko {final_prob:.1%})")
-                st.write("**Rekomendasi Klinis:** Kondisi stabil. Rawat jalan dengan obat simptomatik.")
+                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%})")
+                st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
         else:
             st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
 
-    # --- FOOTER: DETAIL MODEL ---
     st.markdown("---")
-    with st.expander("🔍 Detail Model, Rumus & Data (Klik untuk membuka)", expanded=False):
-        tab1, tab2, tab3 = st.tabs(["📊 Performa & Metrik", "🧮 Rumus & Bobot", "💾 Dataset"])
+    with st.expander("Detail Model, Rumus & Data", expanded=False):
+        tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
         
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
 
-        # Mapping Translator
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
             'Age': 'Usia Pasien (Age)',
@@ -355,27 +322,21 @@ if not df_raw.empty:
             if metrics:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.metric("Skor AUC (Akurasi)", f"{metrics['auc']:.4f}")
+                    st.metric("Skor AUC", f"{metrics['auc']:.4f}")
                     fig, ax = plt.subplots(figsize=(4, 3))
                     ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
                     ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
                     ax.set_title('ROC Curve')
                     st.pyplot(fig)
                 with c2:
-                    st.write("**Confusion Matrix:**")
-                    
-                    # LOGIKA LABEL CUSTOM (TN, FP, FN, TP)
+                    st.write("Confusion Matrix:")
                     cm = metrics['cm']
-                    # Label nama
-                    group_names = ['True Neg (Stabil)','False Pos (Salah Rujuk)','False Neg (Bahaya)','True Pos (Rujuk)']
-                    # Label angka
+                    group_names = ['TN (Aman)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
                     group_counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
-                    # Gabungkan
                     labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
                     labels = np.asarray(labels).reshape(2,2)
                     
                     fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
-                    # Gunakan 'fmt=""' agar bisa menampilkan string kustom kita
                     sns.heatmap(cm, annot=labels, fmt='', cmap='Blues', cbar=False, ax=ax_cm)
                     ax_cm.set_xlabel('Prediksi Model')
                     ax_cm.set_ylabel('Data Aktual')
@@ -383,7 +344,7 @@ if not df_raw.empty:
 
         with tab2:
             if coeffs:
-                st.markdown("#### Bobot Variabel ($\beta_i$)")
+                st.markdown("#### Bobot Variabel")
                 coef_df = pd.DataFrame.from_dict(coeffs, orient='index', columns=['Bobot'])
                 plot_df = coef_df.drop('Intercept')
                 plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
@@ -395,7 +356,7 @@ if not df_raw.empty:
                 st.dataframe(coef_df.style.format("{:.4f}"))
 
         with tab3:
-            st.markdown(f"**Total Data:** {len(df_raw)} Pasien")
+            st.markdown(f"Total Data: {len(df_raw)} Pasien")
             st.dataframe(df_raw.head(20))
 
 else:
