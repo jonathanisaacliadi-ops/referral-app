@@ -363,7 +363,7 @@ if not df_raw.empty:
 
         with tab3:
             st.markdown(f"Total Data: {len(df_raw)} Pasien")
-            st.dataframe(df_raw.head(20))
+            st.dataframe(df_raw)
 
 else:
     st.error("Gagal memulai aplikasi.")
