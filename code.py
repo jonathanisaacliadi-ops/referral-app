@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 import os
+import sys # Ditambahkan untuk logging yang lebih baik
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -126,21 +127,23 @@ def preprocess_data(df):
 # --- 4. Pelatihan Model ---
 @st.cache_resource
 def train_medical_model(df_processed):
+    # Inisialisasi H2O
     try:
-        # Inisialisasi H2O hanya jika belum diinisialisasi
         if not h2o.connection().is_running():
              h2o.init(max_mem_size='400M', nthreads=1) 
-    except:
-        return None, None, None, None, None # Menambahkan scaler ke nilai kembali
+    except Exception as e:
+        print(f"ERROR: H2O Initialization Failed: {e}", file=sys.stderr)
+        return None, None, None, None, None 
 
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
+    # Train-Test Split dengan penanganan error stratify
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    except ValueError:
-         # Menangani kegagalan stratify (mis. kelas terlalu sedikit)
-        return None, None, None, None, None
+    except ValueError as e:
+         print(f"ERROR: Train/Test Split Failed (Check data skew): {e}", file=sys.stderr)
+         return None, None, None, None, None
 
     train_pd = pd.concat([X_train, y_train], axis=1)
     test_pd = pd.concat([X_test, y_test], axis=1)
@@ -153,6 +156,7 @@ def train_medical_model(df_processed):
     
     hf_train[y_col] = hf_train[y_col].asfactor()
     
+    # AutoML Configuration
     aml = H2OAutoML(
         max_models=3, 
         seed=42, 
@@ -165,33 +169,43 @@ def train_medical_model(df_processed):
     try:
         aml.train(x=x_cols, y=y_col, training_frame=hf_train)
         best_model = aml.leader
-    except: 
+    except Exception as e: 
+        print(f"ERROR: H2O AutoML Training Failed: {e}", file=sys.stderr)
         return None, None, None, None, None
     
     # Pastikan model leader ada sebelum memanggil predict
     if best_model is None:
+        print("ERROR: H2O AutoML did not find a leader model.", file=sys.stderr)
         return None, None, None, None, None
-        
-    s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
-    s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
+
+    # Menggunakan predict pada hf_train dan hf_test untuk mendapatkan ML_Score
+    try:
+        s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
+        s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
+    except Exception as e:
+        print(f"ERROR: H2O Prediction Failed: {e}", file=sys.stderr)
+        return None, None, None, None, None
     
     X_train['ML_Score'] = s_train
     X_test['ML_Score'] = s_test
     
-    # --- PERUBAHAN UTAMA: Standardisasi Fitur Numerik untuk LogReg ---
+    # --- Standardisasi Fitur Numerik untuk LogReg ---
     scaler = StandardScaler()
     
-    # Identifikasi kolom yang akan diskalakan
     cols_to_scale = list(X_train.columns) 
     
-    # Latih scaler pada data train dan transformasikan
-    X_train_scaled = scaler.fit_transform(X_train[cols_to_scale])
-    X_train_scaled = pd.DataFrame(X_train_scaled, index=X_train.index, columns=cols_to_scale)
-    
-    # Transformasikan data test menggunakan scaler yang sama
-    X_test_scaled = scaler.transform(X_test[cols_to_scale])
-    X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
-    
+    try:
+        # Latih scaler pada data train dan transformasikan
+        X_train_scaled = scaler.fit_transform(X_train[cols_to_scale])
+        X_train_scaled = pd.DataFrame(X_train_scaled, index=X_train.index, columns=cols_to_scale)
+        
+        # Transformasikan data test menggunakan scaler yang sama
+        X_test_scaled = scaler.transform(X_test[cols_to_scale])
+        X_test_scaled = pd.DataFrame(X_test_scaled, index=X_test.index, columns=cols_to_scale)
+    except Exception as e:
+        print(f"ERROR: SCALING FAILED (Check zero variance columns): {e}", file=sys.stderr)
+        return None, None, None, None, None
+
     # Latih Regresi Logistik pada data yang diskalakan
     log_reg = LogisticRegression(penalty='l2', C=0.2, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_scaled, y_train)
@@ -227,7 +241,6 @@ def calculate_final_prob(input_dict, ml_score, coeffs, scaler):
     input_scaled = pd.DataFrame(input_scaled, index=input_df.index, columns=cols_to_scale)
     
     # Hitung logit menggunakan koefisien dan data yang diskalakan
-    # Intercept di sini adalah log-odds pada nilai rata-rata (0 setelah scaling)
     logit = coeffs['Intercept']
     for feat in cols_to_scale:
         if feat in coeffs:
@@ -260,6 +273,7 @@ if not df_raw.empty:
         if df_raw.empty:
              pass
         else:
+            # Pesan error di UI, namun sekarang disertai log detail di konsol
             st.error("Gagal memuat atau melatih Model Triage AI. Mohon periksa file data (`disease_diagnosis.csv`), koneksi H2O, atau logs konsol untuk detail kesalahan.")
         st.stop()
         
