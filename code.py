@@ -28,7 +28,6 @@ def load_fixed_dataset():
     if os.path.exists(local_path):
         try:
             df = pd.read_csv(local_path)
-            # Pastikan nama kolom bersih
             df.columns = df.columns.str.strip()
             return df
         except Exception as e:
@@ -61,7 +60,6 @@ def extract_features_from_symptoms(row_or_list):
 def preprocess_data(df):
     processed = df.copy()
     
-    # Parsing Data Vital
     bp_split = processed['Blood_Pressure_mmHg'].astype(str).str.split('/', expand=True)
     processed['Sys_Raw'] = pd.to_numeric(bp_split[0], errors='coerce').fillna(120)
     if bp_split.shape[1] > 1:
@@ -73,38 +71,20 @@ def preprocess_data(df):
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
-    # Flag Risiko (Tanpa NEWS2)
     processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
     
     flags = processed.apply(extract_features_from_symptoms, axis=1)
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    # --- PERBAIKAN KRITIS: TARGET LABELING (Y) ---
-    # Masalah: Data asli mungkin melabeli pasien gawat sebagai 'Mild'/'Moderate'.
-    # Solusi: Kita 'memaksa' label menjadi Severe (1) jika tanda vital kritis,
-    # agar AI belajar pola yang benar ("Suhu 40 = Rujuk").
-    
-    def determine_referral_logic(row):
-        # 1. Cek Label Asli
-        original_label = str(row['Severity']).strip()
-        if original_label == 'Severe':
-            return 1
-        
-        # 2. Cek Aturan Medis Wajib (Override Label Asli jika perlu)
-        # Jika data bilang 'Mild' tapi Oksigen < 92, kita anggap itu SALAH label, dan kita koreksi jadi 1.
-        if row['Oxygen_Raw'] < 92: return 1
-        if row['Temp_Raw'] > 39.5: return 1  # Demam tinggi wajib rujuk
-        if row['Sys_Raw'] < 90: return 1     # Hipotensi/Syok
-        if row['Heart_Raw'] > 130: return 1  # Takikardia berat
-        
-        return 0
-
-    processed['Referral_Required'] = processed.apply(determine_referral_logic, axis=1)
+    # Target tetap mengikuti data asli (biarkan AI belajar dari data apa adanya)
+    processed['Referral_Required'] = processed.apply(
+        lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
+    )
     
     return processed[[
         'Age', 
-        'Sys_Raw', 'Dia_Raw', 'Oxygen_Raw', 'Temp_Raw', 'Heart_Raw', # Data Mentah
+        'Sys_Raw', 'Dia_Raw', 'Oxygen_Raw', 'Temp_Raw', 'Heart_Raw', 
         'Flag_HTN_Crisis',
         'Sym_Dyspnea', 'Sym_Fever',
         'Referral_Required'
@@ -117,30 +97,21 @@ def train_medical_model(df_processed):
     best_model = None
     error_msg = ""
     
-    # Inisialisasi H2O
     try:
         try:
             h2o.cluster().shutdown(prompt=False)
             time.sleep(3) 
         except:
             pass 
-        
         h2o.init(max_mem_size='600M', nthreads=1, ice_root=tempfile.mkdtemp(), verbose=False) 
     except Exception as e:
         error_msg = str(e)
         print(f"H2O Init Failed: {e}", file=sys.stderr)
         use_gbm = False
 
-    # Pisahkan Data
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
-    # Cek keseimbangan kelas setelah koreksi label
-    class_counts = y.value_counts()
-    if len(class_counts) < 2:
-        # Jika setelah koreksi semua jadi 0 atau semua jadi 1, kita tidak bisa melatih
-        return None, None, {'error_msg': "Data tidak seimbang setelah koreksi label."}, None
-
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     except ValueError as e:
@@ -149,16 +120,13 @@ def train_medical_model(df_processed):
     s_train = None
     s_test = None
 
-    # --- MODEL 1: H2O GBM (Menggunakan Data Mentah) ---
     if use_gbm:
         try:
             train_pd = pd.concat([X_train, y_train], axis=1)
             hf_train = h2o.H2OFrame(train_pd)
-            
             y_col = 'Referral_Required'
             hf_train[y_col] = hf_train[y_col].asfactor()
-            
-            features_gbm = list(X.columns) # Semua data mentah masuk GBM
+            features_gbm = list(X.columns)
             
             aml = H2OAutoML(
                 max_models=2, 
@@ -176,21 +144,16 @@ def train_medical_model(df_processed):
                 s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
                 s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
             else:
-                error_msg = "H2O AutoML finished but returned no model."
                 use_gbm = False 
         except Exception as e:
-            error_msg = f"Training Error: {str(e)}"
             print(f"H2O Training Failed: {e}", file=sys.stderr)
             use_gbm = False 
 
-    # --- MODEL 2: LOGISTIC REGRESSION ---
-    
     def get_lr_features(df_orig, ml_scores, use_ml):
         df_new = pd.DataFrame(index=df_orig.index)
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
         
-        # Fitur LogReg
         df_new['Age'] = df_orig['Age']
         df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis']
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea']
@@ -200,7 +163,6 @@ def train_medical_model(df_processed):
     X_train_lr = get_lr_features(X_train, s_train, use_gbm)
     X_test_lr = get_lr_features(X_test, s_test, use_gbm)
     
-    # Standardisasi
     scaler = StandardScaler()
     
     try:
@@ -213,7 +175,6 @@ def train_medical_model(df_processed):
     X_train_final = pd.DataFrame(X_train_scaled_array, columns=cols_lr, index=X_train.index)
     X_test_final = pd.DataFrame(X_test_scaled_array, columns=cols_lr, index=X_test.index)
     
-    # Latih LogReg
     log_reg = LogisticRegression(penalty='l2', C=0.5, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_final, y_train)
     
@@ -230,7 +191,6 @@ def train_medical_model(df_processed):
     for i, col in enumerate(cols_lr):
         coeffs[col] = log_reg.coef_[0][i]
     
-    # Simpan parameter scaler
     coeffs['scaler_mean'] = scaler.mean_.tolist()
     coeffs['scaler_scale'] = scaler.scale_.tolist()
     coeffs['scaler_cols'] = list(cols_lr)
@@ -239,17 +199,29 @@ def train_medical_model(df_processed):
         
     return best_model, log_reg, coeffs, metrics
 
-# --- 5. Kalkulasi Prediksi Baru ---
+# --- 5. Kalkulasi Prediksi Baru (Dengan Safety Override) ---
 def calculate_final_prob(input_dict, ml_score, coeffs):
+    # 1. ATURAN EMAS KEAMANAN (Golden Safety Rules)
+    # Jika kondisi sangat ekstrem, jangan tanya AI, langsung vonis Rujuk (100%)
+    # Ini menangani kasus "Data Dummy" yang mungkin tidak punya contoh ekstrem
+    critical_reasons = []
+    if input_dict['Oxygen_Raw'] <= 90: critical_reasons.append("Saturasi Oksigen Kritis (<=90%)")
+    if input_dict['Temp_Raw'] >= 39.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
+    if input_dict['Sys_Raw'] <= 90: critical_reasons.append("Hipotensi Berat (<=90 mmHg)")
+    if input_dict['Heart_Raw'] >= 140: critical_reasons.append("Takikardia Ekstrem (>=140 bpm)")
+    
+    if critical_reasons:
+        return 0.999, critical_reasons # Override AI
+        
+    # 2. Jika aman, baru gunakan AI (LogReg)
     try:
         means = np.array(coeffs['scaler_mean'])
         scales = np.array(coeffs['scaler_scale'])
         cols = coeffs['scaler_cols']
         use_gbm = coeffs.get('use_gbm', False)
     except KeyError:
-        return 0.5 
+        return 0.5, []
     
-    # Siapkan data baris tunggal (Fitur LogReg)
     data_row = {
         'Age': input_dict['Age'],
         'Flag_HTN_Crisis': input_dict['Flag_HTN_Crisis'],
@@ -266,16 +238,14 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     
     input_values = np.array(input_values).reshape(1, -1)
     
-    # Standardisasi Manual
     input_scaled = (input_values - means) / scales
     
-    # Hitung Logit
     logit = coeffs['Intercept']
     for i, col_name in enumerate(cols):
         logit += coeffs[col_name] * input_scaled[0][i]
             
     prob = 1 / (1 + math.exp(-logit))
-    return prob
+    return prob, []
 
 # --- MAIN APP ---
 
@@ -297,7 +267,6 @@ if not df_raw.empty:
             else:
                 st.error("Gagal melatih model dasar.")
 
-    # --- UI UTAMA ---
     st.title("Sistem Triage & Rujukan Klinis")
     st.write("Sistem pendukung keputusan klinis berbasis Machine Learning (GBM + LogReg).")
     
@@ -349,7 +318,6 @@ if not df_raw.empty:
             valid_symptoms = [s for s in [p_sym1, p_sym2, p_sym3] if s != "-"]
             flags = extract_features_from_symptoms(valid_symptoms)
             
-            # Input Lengkap
             input_dict_full = {
                 'Age': p_age, 
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
@@ -359,12 +327,10 @@ if not df_raw.empty:
                 'Sym_Fever': flags['Sym_Fever']
             } 
             
-            # Prediksi AI (Jika Aktif)
             s_score = 0.5
             use_gbm = st.session_state.coef.get('use_gbm', False)
             
             if use_gbm and st.session_state.gbm:
-                # Buat input khusus untuk GBM yang sesuai dengan training
                 input_gbm = input_dict_full.copy()
                 input_df_gbm = pd.DataFrame([input_gbm])
                 hf_sample = h2o.H2OFrame(input_df_gbm)
@@ -374,8 +340,8 @@ if not df_raw.empty:
                 except:
                     s_score = 0.5 
 
-            # 2. Keputusan Akhir (LogReg)
-            final_prob = calculate_final_prob(input_dict_full, s_score, st.session_state.coef)
+            # Kalkulasi Probabilitas (Sekarang mengembalikan 2 nilai: prob dan list alasan kritis)
+            final_prob, critical_reasons = calculate_final_prob(input_dict_full, s_score, st.session_state.coef)
             
             k1, k2 = st.columns(2)
             k1.metric("Risiko Rujukan", f"{final_prob:.1%}") 
@@ -385,10 +351,17 @@ if not df_raw.empty:
             if final_prob > threshold:
                 st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%})")
                 st.write("Indikasi Klinis:")
-                if p_sys >= 180: st.warning("- Krisis Hipertensi (JNC8)")
-                if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
-                if flags['Sym_Fever']: st.warning("- Gejala Demam")
-                if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
+                
+                # Tampilkan alasan kritis dari override jika ada
+                if critical_reasons:
+                    for reason in critical_reasons:
+                        st.warning(f"- {reason} [CRITICAL]")
+                else:
+                    # Alasan reguler dari AI
+                    if p_sys >= 180: st.warning("- Krisis Hipertensi (JNC8)")
+                    if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
+                    if flags['Sym_Fever']: st.warning("- Gejala Demam")
+                    if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
             else:
                 st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%})")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
