@@ -28,25 +28,13 @@ def load_fixed_dataset():
     if os.path.exists(local_path):
         try:
             df = pd.read_csv(local_path)
+            # Pastikan nama kolom bersih
+            df.columns = df.columns.str.strip()
             return df
         except Exception as e:
             st.error(f"File database rusak: {e}")
     else:
-        st.warning("Database tidak ditemukan. Menggunakan DATA DUMMY.")
-        np.random.seed(42)
-        n_samples = 300
-        data = {
-            'Age': np.random.randint(20, 80, n_samples),
-            'Blood_Pressure_mmHg': [f"{np.random.randint(90, 180)}/{np.random.randint(60, 110)}" for _ in range(n_samples)],
-            'Oxygen_Saturation_%': np.random.randint(85, 100, n_samples),
-            'Body_Temperature_C': np.random.uniform(36.0, 40.0, n_samples),
-            'Heart_Rate_bpm': np.random.randint(60, 140, n_samples),
-            'Symptom_1': np.random.choice(['Fever', 'Shortness of Breath', 'Pain', 'None'], n_samples),
-            'Symptom_2': ['-']*n_samples, 
-            'Symptom_3': ['-']*n_samples,
-            'Severity': np.random.choice(['Severe', 'Mild'], n_samples, p=[0.3, 0.7])
-        }
-        return pd.DataFrame(data)
+        st.error("DATABASE TIDAK DITEMUKAN. Pastikan file 'disease_diagnosis.csv' sudah diupload.")
     return pd.DataFrame()
 
 # --- 3. Feature Engineering ---
@@ -92,11 +80,28 @@ def preprocess_data(df):
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    processed['Referral_Required'] = processed.apply(
-        lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
-    )
+    # --- PERBAIKAN KRITIS: TARGET LABELING (Y) ---
+    # Masalah: Data asli mungkin melabeli pasien gawat sebagai 'Mild'/'Moderate'.
+    # Solusi: Kita 'memaksa' label menjadi Severe (1) jika tanda vital kritis,
+    # agar AI belajar pola yang benar ("Suhu 40 = Rujuk").
     
-    # Kembalikan kolom yang relevan saja (NEWS2 Dihapus)
+    def determine_referral_logic(row):
+        # 1. Cek Label Asli
+        original_label = str(row['Severity']).strip()
+        if original_label == 'Severe':
+            return 1
+        
+        # 2. Cek Aturan Medis Wajib (Override Label Asli jika perlu)
+        # Jika data bilang 'Mild' tapi Oksigen < 92, kita anggap itu SALAH label, dan kita koreksi jadi 1.
+        if row['Oxygen_Raw'] < 92: return 1
+        if row['Temp_Raw'] > 39.5: return 1  # Demam tinggi wajib rujuk
+        if row['Sys_Raw'] < 90: return 1     # Hipotensi/Syok
+        if row['Heart_Raw'] > 130: return 1  # Takikardia berat
+        
+        return 0
+
+    processed['Referral_Required'] = processed.apply(determine_referral_logic, axis=1)
+    
     return processed[[
         'Age', 
         'Sys_Raw', 'Dia_Raw', 'Oxygen_Raw', 'Temp_Raw', 'Heart_Raw', # Data Mentah
@@ -130,6 +135,12 @@ def train_medical_model(df_processed):
     X = df_processed.drop('Referral_Required', axis=1)
     y = df_processed['Referral_Required']
     
+    # Cek keseimbangan kelas setelah koreksi label
+    class_counts = y.value_counts()
+    if len(class_counts) < 2:
+        # Jika setelah koreksi semua jadi 0 atau semua jadi 1, kita tidak bisa melatih
+        return None, None, {'error_msg': "Data tidak seimbang setelah koreksi label."}, None
+
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     except ValueError as e:
@@ -179,7 +190,7 @@ def train_medical_model(df_processed):
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
         
-        # Fitur LogReg: HANYA ML_Score + Faktor Risiko Independen
+        # Fitur LogReg
         df_new['Age'] = df_orig['Age']
         df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis']
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea']
@@ -203,7 +214,7 @@ def train_medical_model(df_processed):
     X_test_final = pd.DataFrame(X_test_scaled_array, columns=cols_lr, index=X_test.index)
     
     # Latih LogReg
-    log_reg = LogisticRegression(penalty='l2', C=0.1, solver='lbfgs', max_iter=2000, random_state=42)
+    log_reg = LogisticRegression(penalty='l2', C=0.5, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_final, y_train)
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
@@ -377,6 +388,7 @@ if not df_raw.empty:
                 if p_sys >= 180: st.warning("- Krisis Hipertensi (JNC8)")
                 if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
                 if flags['Sym_Fever']: st.warning("- Gejala Demam")
+                if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
             else:
                 st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%})")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
