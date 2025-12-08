@@ -13,7 +13,7 @@ import math
 import os
 import time
 import sys
-import tempfile # Ditambahkan untuk manajemen file temp H2O
+import tempfile 
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -70,46 +70,10 @@ def extract_features_from_symptoms(row_or_list):
         'Sym_Fever': 1 if 'fever' in text_sym else 0
     }
 
-def calculate_news2_score_strict(row):
-    score = 0
-    try:
-        o2 = float(row['Oxygen_Saturation_%'])
-        if o2 <= 91: score += 3
-        elif 92 <= o2 <= 93: score += 2
-        elif 94 <= o2 <= 95: score += 1
-    except: pass
-
-    try:
-        if isinstance(row, dict): sys = float(row['Sys_Raw'])
-        else: sys = float(str(row['Blood_Pressure_mmHg']).split('/')[0])
-
-        if sys <= 90: score += 3
-        elif 91 <= sys <= 100: score += 2
-        elif 101 <= sys <= 110: score += 1
-    except: pass
-
-    try:
-        hr = float(row['Heart_Rate_bpm'])
-        if hr <= 40: score += 3
-        elif 41 <= hr <= 50: score += 1
-        elif 91 <= hr <= 100: score += 1
-        elif 101 <= hr <= 130: score += 2 
-        elif hr >= 131: score += 3
-    except: pass
-
-    try:
-        t = float(row['Body_Temperature_C'])
-        if t <= 35.0: score += 3
-        elif 35.1 <= t <= 36.0: score += 1
-        elif 38.1 <= t <= 39.0: score += 1
-        elif t >= 39.1: score += 2
-    except: pass
-    
-    return score
-
 def preprocess_data(df):
     processed = df.copy()
     
+    # Parsing Data Vital
     bp_split = processed['Blood_Pressure_mmHg'].astype(str).str.split('/', expand=True)
     processed['Sys_Raw'] = pd.to_numeric(bp_split[0], errors='coerce').fillna(120)
     if bp_split.shape[1] > 1:
@@ -121,8 +85,7 @@ def preprocess_data(df):
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
-    # Hitung NEWS2
-    processed['NEWS2_Score'] = processed.apply(calculate_news2_score_strict, axis=1)
+    # Flag Risiko (Tanpa NEWS2)
     processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
     
     flags = processed.apply(extract_features_from_symptoms, axis=1)
@@ -133,35 +96,30 @@ def preprocess_data(df):
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
     
-    # Kembalikan semua kolom yang diperlukan
+    # Kembalikan kolom yang relevan saja (NEWS2 Dihapus)
     return processed[[
         'Age', 
-        'NEWS2_Score', 
         'Sys_Raw', 'Dia_Raw', 'Oxygen_Raw', 'Temp_Raw', 'Heart_Raw', # Data Mentah
         'Flag_HTN_Crisis',
         'Sym_Dyspnea', 'Sym_Fever',
         'Referral_Required'
     ]]
 
-# --- 4. Pelatihan Model (Clean Architecture + Graceful Fallback) ---
+# --- 4. Pelatihan Model (H2O + LogReg) ---
 @st.cache_resource
 def train_medical_model(df_processed):
     use_gbm = True
     best_model = None
     error_msg = ""
     
-    # Inisialisasi H2O (Dengan Fallback & Alokasi Memori Lebih Besar)
+    # Inisialisasi H2O
     try:
-        # PERBAIKAN: Hapus pengecekan manual is_running() yang menyebabkan error
-        # Gunakan try-except untuk mencoba mematikan instance lama (best effort)
         try:
             h2o.cluster().shutdown(prompt=False)
-            time.sleep(3) # Waktu tunggu untuk shutdown
+            time.sleep(3) 
         except:
-            pass # Abaikan jika tidak ada cluster aktif atau gagal shutdown
+            pass 
         
-        # MENAIKKAN MEMORY KE 600M. 256M Terlalu kecil untuk GBM.
-        # Menggunakan folder temp khusus untuk menghindari masalah izin
         h2o.init(max_mem_size='600M', nthreads=1, ice_root=tempfile.mkdtemp(), verbose=False) 
     except Exception as e:
         error_msg = str(e)
@@ -175,12 +133,12 @@ def train_medical_model(df_processed):
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     except ValueError as e:
-        return None, None, None, None # Critical failure (data issue)
+        return None, None, None, None 
 
     s_train = None
     s_test = None
 
-    # --- MODEL 1: H2O GBM (Hanya jika H2O berhasil) ---
+    # --- MODEL 1: H2O GBM (Menggunakan Data Mentah) ---
     if use_gbm:
         try:
             train_pd = pd.concat([X_train, y_train], axis=1)
@@ -189,13 +147,13 @@ def train_medical_model(df_processed):
             y_col = 'Referral_Required'
             hf_train[y_col] = hf_train[y_col].asfactor()
             
-            features_gbm = list(X.columns)
+            features_gbm = list(X.columns) # Semua data mentah masuk GBM
             
             aml = H2OAutoML(
                 max_models=2, 
                 seed=42, 
                 include_algos=['GBM'], 
-                max_runtime_secs=90, # Waktu moderat
+                max_runtime_secs=90, 
                 verbosity='error',
                 balance_classes=True
             ) 
@@ -221,7 +179,7 @@ def train_medical_model(df_processed):
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
         
-        df_new['NEWS2_Score'] = df_orig['NEWS2_Score']
+        # Hanya fitur demografi dan risiko spesifik
         df_new['Age'] = df_orig['Age']
         df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis']
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea']
@@ -260,12 +218,12 @@ def train_medical_model(df_processed):
     for i, col in enumerate(cols_lr):
         coeffs[col] = log_reg.coef_[0][i]
     
-    # Simpan parameter scaler MANUAL
+    # Simpan parameter scaler
     coeffs['scaler_mean'] = scaler.mean_.tolist()
     coeffs['scaler_scale'] = scaler.scale_.tolist()
     coeffs['scaler_cols'] = list(cols_lr)
-    coeffs['use_gbm'] = use_gbm # Status apakah GBM aktif
-    coeffs['error_msg'] = error_msg # Simpan pesan error untuk UI
+    coeffs['use_gbm'] = use_gbm 
+    coeffs['error_msg'] = error_msg 
         
     return best_model, log_reg, coeffs, metrics
 
@@ -279,19 +237,16 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     except KeyError:
         return 0.5 
     
-    # Siapkan data baris tunggal
+    # Siapkan data baris tunggal (TANPA NEWS2)
     data_row = {
-        'NEWS2_Score': input_dict['NEWS2_Score'],
         'Age': input_dict['Age'],
         'Flag_HTN_Crisis': input_dict['Flag_HTN_Crisis'],
         'Sym_Dyspnea': input_dict['Sym_Dyspnea']
     }
     
-    # Tambah ML Score HANYA jika GBM aktif saat training
     if use_gbm:
         data_row['ML_Score'] = ml_score
     
-    # Urutkan input sesuai training
     input_values = []
     for c in cols:
         input_values.append(data_row.get(c, 0))
@@ -316,13 +271,10 @@ df_raw = load_fixed_dataset()
 if not df_raw.empty:
     df_model = preprocess_data(df_raw)
     
-    # Train Model (Spinner)
     if 'model_ready' not in st.session_state:
         with st.spinner("Memproses Model (Mencoba H2O, Fallback ke LogReg)..."):
-            # Return 4 nilai
             gbm, logreg, coef, metr = train_medical_model(df_model)
             
-            # Cek LOGREG sebagai indikator sukses utama (bukan GBM)
             if logreg is not None:
                 st.session_state.gbm = gbm
                 st.session_state.logreg = logreg
@@ -334,7 +286,7 @@ if not df_raw.empty:
 
     # --- UI UTAMA ---
     st.title("Sistem Triage & Rujukan Klinis")
-    st.write("Sistem pendukung keputusan klinis berbasis Machine Learning dan standar medis internasional (NEWS2, JNC8).")
+    st.write("Sistem pendukung keputusan klinis berbasis Machine Learning (GBM + LogReg).")
     
     if st.session_state.get('model_ready'):
         use_gbm = st.session_state.coef.get('use_gbm', False)
@@ -384,16 +336,9 @@ if not df_raw.empty:
             valid_symptoms = [s for s in [p_sym1, p_sym2, p_sym3] if s != "-"]
             flags = extract_features_from_symptoms(valid_symptoms)
             
-            row_dummy = {
-                'Heart_Rate_bpm': p_hr, 'Body_Temperature_C': p_temp, 
-                'Oxygen_Saturation_%': p_o2, 'Sys_Raw': p_sys, 'Dia_Raw': p_dia
-            }
-            p_news2 = calculate_news2_score_strict(row_dummy)
-            
-            # 1. Input Lengkap
+            # Input Lengkap
             input_dict_full = {
                 'Age': p_age, 
-                'NEWS2_Score': p_news2,
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
                 'Oxygen_Raw': p_o2, 'Temp_Raw': p_temp, 'Heart_Raw': p_hr,
                 'Flag_HTN_Crisis': 1 if p_sys >= 180 else 0,
@@ -406,27 +351,28 @@ if not df_raw.empty:
             use_gbm = st.session_state.coef.get('use_gbm', False)
             
             if use_gbm and st.session_state.gbm:
-                input_df_gbm = pd.DataFrame([input_dict_full])
+                # Buat input khusus untuk GBM yang sesuai dengan training
+                input_gbm = input_dict_full.copy()
+                input_df_gbm = pd.DataFrame([input_gbm])
                 hf_sample = h2o.H2OFrame(input_df_gbm)
                 try:
                     ml_pred = st.session_state.gbm.predict(hf_sample)
                     s_score = ml_pred['p1'].as_data_frame().values[0][0]
                 except:
-                    s_score = 0.5 # Fallback silent
+                    s_score = 0.5 
 
             # 2. Keputusan Akhir (LogReg)
             final_prob = calculate_final_prob(input_dict_full, s_score, st.session_state.coef)
             
             k1, k2, k3 = st.columns(3)
-            k1.metric("NEWS2 Score", f"{p_news2}")
+            # Menghapus NEWS2 dari Display
+            k1.metric("Risiko Rujukan", f"{final_prob:.1%}")
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
-            k3.metric("Risiko Rujukan", f"{final_prob:.1%}")
             
             threshold = 0.5 
             if final_prob > threshold:
                 st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%})")
                 st.write("Indikasi Klinis:")
-                if p_news2 >= 5: st.warning(f"- Skor NEWS2 {p_news2} (Bahaya Klinis)")
                 if p_sys >= 180: st.warning("- Krisis Hipertensi (JNC8)")
                 if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
             else:
@@ -448,7 +394,6 @@ if not df_raw.empty:
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
             'Age': 'Usia Pasien (Age)',
-            'NEWS2_Score': 'NEWS2 Score (Total)',
             'ML_Score': 'Skor Prediksi AI (ML_Score)',
             'Sym_Dyspnea': 'Gejala Sesak Napas',
             'Flag_HTN_Crisis': 'Krisis Hipertensi'
