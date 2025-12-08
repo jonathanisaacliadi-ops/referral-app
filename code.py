@@ -90,13 +90,14 @@ def preprocess_data(df):
         'Referral_Required'
     ]]
 
-# --- 4. Pelatihan Model (H2O + LogReg) ---
+# --- 4. Pelatihan Model (H2O + LogReg Revisi) ---
 @st.cache_resource
 def train_medical_model(df_processed):
     use_gbm = True
     best_model = None
     error_msg = ""
     
+    # ... (Bagian Inisialisasi H2O TETAP SAMA seperti sebelumnya) ...
     try:
         try:
             h2o.cluster().shutdown(prompt=False)
@@ -120,6 +121,7 @@ def train_medical_model(df_processed):
     s_train = None
     s_test = None
 
+    # ... (Bagian Training H2O GBM TETAP SAMA) ...
     if use_gbm:
         try:
             train_pd = pd.concat([X_train, y_train], axis=1)
@@ -149,16 +151,26 @@ def train_medical_model(df_processed):
             print(f"H2O Training Failed: {e}", file=sys.stderr)
             use_gbm = False 
 
+    # === BAGIAN INI YANG DIUBAH (HAPUS DEMAM DARI LOGREG) ===
     def get_lr_features(df_orig, ml_scores, use_ml):
         df_new = pd.DataFrame(index=df_orig.index)
+        
+        # 1. Komponen AI (Deep Component)
+        # Menangkap pola kompleks termasuk Demam, Oksigen, Nadi, dll
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
         
+        # 2. Komponen Safety Net (Wide Component - Prioritas Medis)
+        # Hanya menyisakan variabel 'Red Flag' sesuai standar NEWS2
         df_new['Age'] = df_orig['Age']
-        df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis']
-        df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea']
-        df_new['Sym_Fever'] = df_orig['Sym_Fever'] 
+        df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis'] # Safety Net 1
+        df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea']         # Safety Net 2 (Pernapasan)
+        
+        # Note: Sym_Fever DIHAPUS dari sini karena bobotnya rendah (NEWS2 Score < 3)
+        # Demam biarkan ditangani oleh ML_Score saja.
+        
         return df_new
+    # ========================================================
 
     X_train_lr = get_lr_features(X_train, s_train, use_gbm)
     X_test_lr = get_lr_features(X_test, s_test, use_gbm)
@@ -199,11 +211,9 @@ def train_medical_model(df_processed):
         
     return best_model, log_reg, coeffs, metrics
 
-# --- 5. Kalkulasi Prediksi Baru (Dengan Safety Override) ---
+# --- 5. Kalkulasi Prediksi Baru (Update: Hapus Demam dari Manual Calculation) ---
 def calculate_final_prob(input_dict, ml_score, coeffs):
-    # 1. ATURAN EMAS KEAMANAN (Golden Safety Rules)
-    # Jika kondisi sangat ekstrem, jangan tanya AI, langsung vonis Rujuk (100%)
-    # Ini menangani kasus "Data Dummy" yang mungkin tidak punya contoh ekstrem
+    # 1. ATURAN EMAS KEAMANAN (Golden Safety Rules - Override Mutlak)
     critical_reasons = []
     if input_dict['Oxygen_Raw'] <= 90: critical_reasons.append("Saturasi Oksigen Kritis (<=90%)")
     if input_dict['Temp_Raw'] >= 39.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
@@ -211,9 +221,9 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     if input_dict['Heart_Raw'] >= 140: critical_reasons.append("Takikardia Ekstrem (>=140 bpm)")
     
     if critical_reasons:
-        return 0.999, critical_reasons # Override AI
+        return 0.999, critical_reasons 
         
-    # 2. Jika aman, baru gunakan AI (LogReg)
+    # 2. Kalkulasi Model Hybrid
     try:
         means = np.array(coeffs['scaler_mean'])
         scales = np.array(coeffs['scaler_scale'])
@@ -222,17 +232,20 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     except KeyError:
         return 0.5, []
     
+    # Mapping data input ke kolom yang diharapkan LogReg
+    # 'Sym_Fever' TIDAK DIMASUKKAN ke dictionary ini
     data_row = {
         'Age': input_dict['Age'],
         'Flag_HTN_Crisis': input_dict['Flag_HTN_Crisis'],
-        'Sym_Dyspnea': input_dict['Sym_Dyspnea'],
-        'Sym_Fever': input_dict['Sym_Fever']
+        'Sym_Dyspnea': input_dict['Sym_Dyspnea']
     }
     
     if use_gbm:
         data_row['ML_Score'] = ml_score
     
     input_values = []
+    # Loop ini otomatis hanya akan mengambil Age, HTN, Dyspnea, dan ML_Score
+    # karena 'cols' berasal dari training yang sudah dikurangi kolomnya.
     for c in cols:
         input_values.append(data_row.get(c, 0))
     
@@ -255,7 +268,7 @@ if not df_raw.empty:
     df_model = preprocess_data(df_raw)
     
     if 'model_ready' not in st.session_state:
-        with st.spinner("Memproses Model (Mencoba H2O, Fallback ke LogReg)..."):
+        with st.spinner("Memproses Model Mencoba H2O"):
             gbm, logreg, coef, metr = train_medical_model(df_model)
             
             if logreg is not None:
