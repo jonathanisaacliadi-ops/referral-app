@@ -183,7 +183,7 @@ def train_medical_model(df_processed):
         df_new['Age'] = df_orig['Age']
         df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis']
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea']
-        df_new['Sym_Fever'] = df_orig['Sym_Fever'] # Tambah Sym_Fever
+        df_new['Sym_Fever'] = df_orig['Sym_Fever'] 
         return df_new
 
     X_train_lr = get_lr_features(X_train, s_train, use_gbm)
@@ -203,7 +203,6 @@ def train_medical_model(df_processed):
     X_test_final = pd.DataFrame(X_test_scaled_array, columns=cols_lr, index=X_test.index)
     
     # Latih LogReg
-    # PERBAIKAN: C=0.1 (Lebih rendah) untuk meningkatkan bobot koefisien (sensitivitas terhadap ML_Score)
     log_reg = LogisticRegression(penalty='l2', C=0.1, solver='lbfgs', max_iter=2000, random_state=42)
     log_reg.fit(X_train_final, y_train)
     
@@ -368,7 +367,7 @@ if not df_raw.empty:
             final_prob = calculate_final_prob(input_dict_full, s_score, st.session_state.coef)
             
             k1, k2 = st.columns(2)
-            k1.metric("Risiko Rujukan", f"{final_prob:.1%}")
+            k1.metric("Risiko Rujukan", f"{final_prob:.1%}") 
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             
             threshold = 0.5 
@@ -377,6 +376,7 @@ if not df_raw.empty:
                 st.write("Indikasi Klinis:")
                 if p_sys >= 180: st.warning("- Krisis Hipertensi (JNC8)")
                 if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
+                if flags['Sym_Fever']: st.warning("- Gejala Demam")
             else:
                 st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%})")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
@@ -398,7 +398,7 @@ if not df_raw.empty:
             'Age': 'Usia Pasien (Age)',
             'ML_Score': 'Skor Prediksi AI (ML_Score)',
             'Sym_Dyspnea': 'Gejala Sesak Napas',
-            'Sym_Fever': 'Gejala Demam', # Tambahkan Sym_Fever
+            'Sym_Fever': 'Gejala Demam',
             'Flag_HTN_Crisis': 'Krisis Hipertensi'
         }
 
