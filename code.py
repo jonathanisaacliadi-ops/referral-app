@@ -418,6 +418,7 @@ if not df_raw.empty:
                     
                     group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
                     group_counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
+                    labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
                     labels = np.asarray(labels).reshape(2,2)
                     
                     fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
