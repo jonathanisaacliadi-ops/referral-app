@@ -13,6 +13,7 @@ import math
 import os
 import time
 import sys
+import tempfile # Ditambahkan untuk manajemen file temp H2O
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
@@ -147,15 +148,20 @@ def preprocess_data(df):
 def train_medical_model(df_processed):
     use_gbm = True
     best_model = None
+    error_msg = ""
     
-    # Inisialisasi H2O (Dengan Fallback)
+    # Inisialisasi H2O (Dengan Fallback & Alokasi Memori Lebih Besar)
     try:
         if h2o.connection().is_running():
             h2o.cluster().shutdown(prompt=False)
-            time.sleep(2) # Tambah waktu tunggu
-        h2o.init(max_mem_size='256M', nthreads=1, verbose=False) # Kurangi memori
+            time.sleep(3) # Waktu tunggu lebih lama untuk shutdown
+        
+        # MENAIKKAN MEMORY KE 600M. 256M Terlalu kecil untuk GBM.
+        # Menggunakan folder temp khusus untuk menghindari masalah izin
+        h2o.init(max_mem_size='600M', nthreads=1, ice_root=tempfile.mkdtemp(), verbose=False) 
     except Exception as e:
-        print(f"H2O Init Failed (Switched to LogReg Only): {e}", file=sys.stderr)
+        error_msg = str(e)
+        print(f"H2O Init Failed: {e}", file=sys.stderr)
         use_gbm = False
 
     # Pisahkan Data
@@ -164,8 +170,8 @@ def train_medical_model(df_processed):
     
     try:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    except ValueError:
-        return None, None, None, None
+    except ValueError as e:
+        return None, None, None, None # Critical failure (data issue)
 
     s_train = None
     s_test = None
@@ -185,7 +191,7 @@ def train_medical_model(df_processed):
                 max_models=2, 
                 seed=42, 
                 include_algos=['GBM'], 
-                max_runtime_secs=60, 
+                max_runtime_secs=90, # Waktu moderat
                 verbosity='error',
                 balance_classes=True
             ) 
@@ -197,10 +203,12 @@ def train_medical_model(df_processed):
                 s_train = best_model.predict(hf_train)['p1'].as_data_frame().values.flatten()
                 s_test = best_model.predict(hf_test)['p1'].as_data_frame().values.flatten()
             else:
-                use_gbm = False # Fallback jika training gagal
+                error_msg = "H2O AutoML finished but returned no model."
+                use_gbm = False 
         except Exception as e:
+            error_msg = f"Training Error: {str(e)}"
             print(f"H2O Training Failed: {e}", file=sys.stderr)
-            use_gbm = False # Fallback
+            use_gbm = False 
 
     # --- MODEL 2: LOGISTIC REGRESSION ---
     
@@ -253,6 +261,7 @@ def train_medical_model(df_processed):
     coeffs['scaler_scale'] = scaler.scale_.tolist()
     coeffs['scaler_cols'] = list(cols_lr)
     coeffs['use_gbm'] = use_gbm # Status apakah GBM aktif
+    coeffs['error_msg'] = error_msg # Simpan pesan error untuk UI
         
     return best_model, log_reg, coeffs, metrics
 
@@ -326,7 +335,10 @@ if not df_raw.empty:
     if st.session_state.get('model_ready'):
         use_gbm = st.session_state.coef.get('use_gbm', False)
         if not use_gbm:
-            st.warning("⚠️ Mode Terbatas: Komponen AI Lanjut (GBM) tidak aktif karena masalah teknis server. Prediksi menggunakan Model Standar (LogReg).")
+            error_details = st.session_state.coef.get('error_msg', 'Unknown Error')
+            st.warning("⚠️ Mode Terbatas: Komponen AI Lanjut (GBM) tidak aktif. Prediksi menggunakan Model Standar (LogReg).")
+            with st.expander("Lihat Detail Error Teknis (Untuk Debugging)"):
+                st.code(error_details)
     
     st.markdown("---")
 
@@ -468,7 +480,7 @@ if not df_raw.empty:
                 st.markdown("#### Bobot Variabel (Scaled)")
                 # Bersihkan dictionary dari data scaler internal sebelum plotting
                 plot_coeffs = coeffs.copy()
-                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm']:
+                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg']:
                     if k in plot_coeffs: del plot_coeffs[k]
 
                 coef_df = pd.DataFrame.from_dict(plot_coeffs, orient='index', columns=['Bobot'])
