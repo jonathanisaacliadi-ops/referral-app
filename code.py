@@ -77,7 +77,6 @@ def preprocess_data(df):
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
     processed = pd.concat([processed, flags_df], axis=1)
     
-    # Target tetap mengikuti data asli
     processed['Referral_Required'] = processed.apply(
         lambda x: 1 if str(x['Severity']).strip() == 'Severe' else 0, axis=1
     )
@@ -149,21 +148,16 @@ def train_medical_model(df_processed):
             print(f"H2O Training Failed: {e}", file=sys.stderr)
             use_gbm = False 
 
-    # === UPDATE: HAPUS UMUR DARI SINI (Karena sudah di ML Score) ===
     def get_lr_features(df_orig, ml_scores, use_ml):
         df_new = pd.DataFrame(index=df_orig.index)
         
-        # 1. Komponen AI (Deep Component)
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
         
-        # 2. Komponen Safety Net (Wide Component)
-        # HAPUS: df_new['Age'] = df_orig['Age']  <-- Sudah dihapus
         df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis'] 
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea'] 
         
         return df_new
-    # ========================================================
 
     X_train_lr = get_lr_features(X_train, s_train, use_gbm)
     X_test_lr = get_lr_features(X_test, s_test, use_gbm)
@@ -204,9 +198,8 @@ def train_medical_model(df_processed):
         
     return best_model, log_reg, coeffs, metrics
 
-# --- 5. Kalkulasi Prediksi Baru (Update: Hapus Age dari Manual Calculation) ---
+
 def calculate_final_prob(input_dict, ml_score, coeffs):
-    # 1. ATURAN EMAS KEAMANAN
     critical_reasons = []
     if input_dict['Oxygen_Raw'] <= 90: critical_reasons.append("Saturasi Oksigen Kritis (<=90%)")
     if input_dict['Temp_Raw'] >= 39.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
@@ -215,8 +208,6 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     
     if critical_reasons:
         return 0.999, critical_reasons 
-        
-    # 2. Kalkulasi Model Hybrid
     try:
         means = np.array(coeffs['scaler_mean'])
         scales = np.array(coeffs['scaler_scale'])
@@ -225,9 +216,7 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     except KeyError:
         return 0.5, []
     
-    # Mapping data input: HAPUS 'Age' DARI SINI
     data_row = {
-        # 'Age': input_dict['Age'], <-- Sudah dihapus
         'Flag_HTN_Crisis': input_dict['Flag_HTN_Crisis'],
         'Sym_Dyspnea': input_dict['Sym_Dyspnea']
     }
@@ -343,7 +332,6 @@ if not df_raw.empty:
                 except:
                     s_score = 0.5 
 
-            # Kalkulasi Probabilitas
             final_prob, critical_reasons = calculate_final_prob(input_dict_full, s_score, st.session_state.coef)
             
             k1, k2 = st.columns(2)
@@ -370,7 +358,7 @@ if not df_raw.empty:
         elif not st.session_state.get('model_ready'):
              st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
 
-    # --- MENU BAWAH (UI Asli) ---
+
     st.markdown("---")
     with st.expander("Detail Model, Rumus & Data", expanded=False):
         tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
@@ -378,10 +366,9 @@ if not df_raw.empty:
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
 
-        # Map variable name untuk display
+
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
-            # 'Age': 'Usia Pasien (Age)', <-- Dihapus dari tampilan bobot karena tidak ada di LogReg
             'ML_Score': 'Skor Prediksi AI (ML_Score)',
             'Sym_Dyspnea': 'Gejala Sesak Napas',
             'Sym_Fever': 'Gejala Demam',
