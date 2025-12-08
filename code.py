@@ -152,9 +152,13 @@ def train_medical_model(df_processed):
     
     # Inisialisasi H2O (Dengan Fallback & Alokasi Memori Lebih Besar)
     try:
-        if h2o.connection().is_running():
+        # PERBAIKAN: Hapus pengecekan manual is_running() yang menyebabkan error
+        # Gunakan try-except untuk mencoba mematikan instance lama (best effort)
+        try:
             h2o.cluster().shutdown(prompt=False)
-            time.sleep(3) # Waktu tunggu lebih lama untuk shutdown
+            time.sleep(3) # Waktu tunggu untuk shutdown
+        except:
+            pass # Abaikan jika tidak ada cluster aktif atau gagal shutdown
         
         # MENAIKKAN MEMORY KE 600M. 256M Terlalu kecil untuk GBM.
         # Menggunakan folder temp khusus untuk menghindari masalah izin
