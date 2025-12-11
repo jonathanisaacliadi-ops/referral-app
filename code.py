@@ -178,13 +178,24 @@ def train_medical_model(df_processed):
     log_reg.fit(X_train_final, y_train)
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
-    y_pred = (y_prob > 0.5).astype(int)
     
-    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    # --- HITUNG THRESHOLD OPTIMAL (Youden's J) ---
+    fpr, tpr, thresholds = roc_curve(y_test, y_prob)
     roc_auc = auc(fpr, tpr)
+    
+    optimal_idx = np.argmax(tpr - fpr)
+    optimal_threshold = thresholds[optimal_idx]
+    
+    y_pred = (y_prob >= optimal_threshold).astype(int)
     cm = confusion_matrix(y_test, y_pred)
     
-    metrics = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc, 'cm': cm}
+    metrics = {
+        'fpr': fpr, 
+        'tpr': tpr, 
+        'auc': roc_auc, 
+        'cm': cm, 
+        'optimal_threshold': optimal_threshold
+    }
     
     coeffs = {'Intercept': log_reg.intercept_[0]}
     for i, col in enumerate(cols_lr):
@@ -338,9 +349,14 @@ if not df_raw.empty:
             k1.metric("Risiko Rujukan", f"{final_prob:.1%}") 
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             
-            threshold = 0.5 
+            # --- MENGGUNAKAN THRESHOLD OPTIMAL ---
+            metrics_data = st.session_state.get('metrics', {})
+            threshold = metrics_data.get('optimal_threshold', 0.5)
+            
+            st.caption(f"Threshold Keputusan (Optimized): {threshold:.3f}")
+
             if final_prob > threshold:
-                st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%})")
+                st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%} > {threshold:.3f})")
                 st.write("Indikasi Klinis:")
                 
                 if critical_reasons:
@@ -352,7 +368,7 @@ if not df_raw.empty:
                     if flags['Sym_Fever']: st.warning("- Gejala Demam")
                     if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
             else:
-                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%})")
+                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%} <= {threshold:.3f})")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
                 
         elif not st.session_state.get('model_ready'):
@@ -365,7 +381,6 @@ if not df_raw.empty:
         
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
-
 
         variable_map = {
             'Intercept': 'Intercept (Nilai Dasar)',
@@ -380,13 +395,20 @@ if not df_raw.empty:
                 c1, c2 = st.columns(2)
                 with c1:
                     st.metric("Skor AUC", f"{metrics['auc']:.4f}")
+                    st.metric("Optimal Threshold", f"{metrics['optimal_threshold']:.4f}")
                     fig, ax = plt.subplots(figsize=(4, 3))
-                    ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2)
+                    ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
+                    # Visualisasi titik optimal
+                    idx = np.argmin(np.abs(metrics['fpr'] - metrics['tpr'])) 
+                    ax.scatter(metrics['fpr'][np.argmax(metrics['tpr'] - metrics['fpr'])], 
+                               metrics['tpr'][np.argmax(metrics['tpr'] - metrics['fpr'])], 
+                               color='red', label='Optimal Cut-off')
                     ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+                    ax.legend(loc="lower right")
                     ax.set_title('ROC Curve')
                     st.pyplot(fig)
                 with c2:
-                    st.write("Confusion Matrix:")
+                    st.write("Confusion Matrix (pada Threshold Optimal):")
                     cm = metrics['cm']
                     
                     group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
@@ -408,6 +430,12 @@ if not df_raw.empty:
                     if k in plot_coeffs: del plot_coeffs[k]
 
                 coef_df = pd.DataFrame.from_dict(plot_coeffs, orient='index', columns=['Bobot'])
+                
+                # --- FIX ERROR DISINI: Pastikan data numerik ---
+                coef_df['Bobot'] = pd.to_numeric(coef_df['Bobot'], errors='coerce')
+                coef_df = coef_df.dropna()
+                # ----------------------------------------------
+                
                 plot_df = coef_df.drop('Intercept', errors='ignore')
                 plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
                 plot_df = plot_df.sort_values(by='Bobot', ascending=False)
