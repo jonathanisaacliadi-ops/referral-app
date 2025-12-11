@@ -179,21 +179,27 @@ def train_medical_model(df_processed):
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
     
-    # --- HITUNG THRESHOLD OPTIMAL (Youden's J) ---
+    # --- HITUNG THRESHOLD & DUA CONFUSION MATRIX ---
     fpr, tpr, thresholds = roc_curve(y_test, y_prob)
     roc_auc = auc(fpr, tpr)
     
     optimal_idx = np.argmax(tpr - fpr)
     optimal_threshold = thresholds[optimal_idx]
     
-    y_pred = (y_prob >= optimal_threshold).astype(int)
-    cm = confusion_matrix(y_test, y_pred)
+    # 1. Confusion Matrix untuk Default Threshold (0.5)
+    y_pred_default = (y_prob > 0.5).astype(int) 
+    cm_default = confusion_matrix(y_test, y_pred_default)
+    
+    # 2. Confusion Matrix untuk Optimal Threshold
+    y_pred_optimal = (y_prob >= optimal_threshold).astype(int)
+    cm_optimal = confusion_matrix(y_test, y_pred_optimal)
     
     metrics = {
         'fpr': fpr, 
         'tpr': tpr, 
         'auc': roc_auc, 
-        'cm': cm, 
+        'cm_default': cm_default, # CM Default
+        'cm_optimal': cm_optimal, # CM Optimal
         'optimal_threshold': optimal_threshold
     }
     
@@ -251,6 +257,14 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     return prob, []
 
 # --- MAIN APP ---
+
+with st.sidebar:
+    st.header("Kontrol")
+    if st.button("Reset / Latih Ulang Model"):
+        st.cache_resource.clear()
+        if 'model_ready' in st.session_state:
+            del st.session_state['model_ready']
+        st.rerun()
 
 df_raw = load_fixed_dataset()
 
@@ -349,14 +363,15 @@ if not df_raw.empty:
             k1.metric("Risiko Rujukan", f"{final_prob:.1%}") 
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             
-            # --- MENGGUNAKAN THRESHOLD OPTIMAL ---
+            # --- Logic Decision (Tetap 0.5) ---
             metrics_data = st.session_state.get('metrics', {})
-            threshold = metrics_data.get('optimal_threshold', 0.5)
+            threshold = 0.5
+            optimal_thresh = metrics_data.get('optimal_threshold', 0.5)
             
-            st.caption(f"Threshold Keputusan (Optimized): {threshold:.3f}")
+            st.caption(f"Threshold Standar: {threshold} (Saran AI Optimal: {optimal_thresh:.3f})")
 
             if final_prob > threshold:
-                st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%} > {threshold:.3f})")
+                st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%} > {threshold})")
                 st.write("Indikasi Klinis:")
                 
                 if critical_reasons:
@@ -368,7 +383,7 @@ if not df_raw.empty:
                     if flags['Sym_Fever']: st.warning("- Gejala Demam")
                     if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
             else:
-                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%} <= {threshold:.3f})")
+                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%} <= {threshold})")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
                 
         elif not st.session_state.get('model_ready'):
@@ -392,35 +407,67 @@ if not df_raw.empty:
 
         with tab1:
             if metrics:
-                c1, c2 = st.columns(2)
-                with c1:
+                c_head1, c_head2 = st.columns(2)
+                with c_head1:
                     st.metric("Skor AUC", f"{metrics['auc']:.4f}")
-                    st.metric("Optimal Threshold", f"{metrics['optimal_threshold']:.4f}")
-                    fig, ax = plt.subplots(figsize=(4, 3))
-                    ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
-                    # Visualisasi titik optimal
+                    disp_thresh = metrics.get('optimal_threshold', 0.5)
+                    st.metric("Optimal Threshold (Info)", f"{disp_thresh:.4f}")
+                
+                st.markdown("---")
+                st.write("### Perbandingan Confusion Matrix")
+                
+                # --- MENAMPILKAN 2 CONFUSION MATRIX ---
+                cm_def = metrics.get('cm_default', metrics.get('cm')) # Fallback jika data lama
+                cm_opt = metrics.get('cm_optimal')
+                
+                col_cm1, col_cm2 = st.columns(2)
+                
+                with col_cm1:
+                    st.write("**A. Threshold Default (0.5)**")
+                    if cm_def is not None:
+                        group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
+                        group_counts = ["{0:0.0f}".format(value) for value in cm_def.flatten()]
+                        labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
+                        labels = np.asarray(labels).reshape(2,2)
+                        
+                        fig_cm1, ax_cm1 = plt.subplots(figsize=(3.5, 3))
+                        sns.heatmap(cm_def, annot=labels, fmt='', cmap='Blues', cbar=False, ax=ax_cm1)
+                        ax_cm1.set_xlabel('Prediksi Model')
+                        ax_cm1.set_ylabel('Data Aktual')
+                        st.pyplot(fig_cm1)
+
+                with col_cm2:
+                    st.write(f"**B. Threshold Optimal ({disp_thresh:.3f})**")
+                    if cm_opt is not None:
+                        group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
+                        group_counts = ["{0:0.0f}".format(value) for value in cm_opt.flatten()]
+                        labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
+                        labels = np.asarray(labels).reshape(2,2)
+                        
+                        fig_cm2, ax_cm2 = plt.subplots(figsize=(3.5, 3))
+                        sns.heatmap(cm_opt, annot=labels, fmt='', cmap='Oranges', cbar=False, ax=ax_cm2) # Oranges untuk beda warna
+                        ax_cm2.set_xlabel('Prediksi Model')
+                        ax_cm2.set_ylabel('Data Aktual')
+                        st.pyplot(fig_cm2)
+                    else:
+                        st.warning("Data confusion matrix optimal belum tersedia. Silakan 'Reset Model'.")
+
+                st.markdown("---")
+                st.write("#### Kurva ROC")
+                fig, ax = plt.subplots(figsize=(5, 4))
+                ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
+                
+                if 'optimal_threshold' in metrics:
                     idx = np.argmin(np.abs(metrics['fpr'] - metrics['tpr'])) 
                     ax.scatter(metrics['fpr'][np.argmax(metrics['tpr'] - metrics['fpr'])], 
                                metrics['tpr'][np.argmax(metrics['tpr'] - metrics['fpr'])], 
                                color='red', label='Optimal Cut-off')
-                    ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
-                    ax.legend(loc="lower right")
-                    ax.set_title('ROC Curve')
-                    st.pyplot(fig)
-                with c2:
-                    st.write("Confusion Matrix (pada Threshold Optimal):")
-                    cm = metrics['cm']
                     
-                    group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
-                    group_counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
-                    labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
-                    labels = np.asarray(labels).reshape(2,2)
-                    
-                    fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
-                    sns.heatmap(cm, annot=labels, fmt='', cmap='Blues', cbar=False, ax=ax_cm)
-                    ax_cm.set_xlabel('Prediksi Model')
-                    ax_cm.set_ylabel('Data Aktual')
-                    st.pyplot(fig_cm)
+                ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+                ax.legend(loc="lower right")
+                ax.set_title('ROC Curve')
+                st.pyplot(fig)
+
 
         with tab2:
             if coeffs:
@@ -431,10 +478,8 @@ if not df_raw.empty:
 
                 coef_df = pd.DataFrame.from_dict(plot_coeffs, orient='index', columns=['Bobot'])
                 
-                # --- FIX ERROR DISINI: Pastikan data numerik ---
                 coef_df['Bobot'] = pd.to_numeric(coef_df['Bobot'], errors='coerce')
                 coef_df = coef_df.dropna()
-                # ----------------------------------------------
                 
                 plot_df = coef_df.drop('Intercept', errors='ignore')
                 plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
