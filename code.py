@@ -179,7 +179,7 @@ def train_medical_model(df_processed):
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
     
-    # --- LOGIKA BARU: MENCARI MAX ACCURACY ---
+    # --- LOGIKA: MENCARI MAX ACCURACY ---
     fpr, tpr, thresholds = roc_curve(y_test, y_prob)
     roc_auc = auc(fpr, tpr)
     
@@ -193,6 +193,10 @@ def train_medical_model(df_processed):
     max_acc_idx = np.argmax(accuracy_list)
     max_acc_val = accuracy_list[max_acc_idx]
     optimal_threshold = thresholds[max_acc_idx]
+    
+    # Simpan koordinat FPR/TPR untuk threshold tersebut (agar grafik tidak error)
+    optimal_fpr = fpr[max_acc_idx]
+    optimal_tpr = tpr[max_acc_idx]
     
     # 1. Confusion Matrix Default (0.5)
     y_pred_default = (y_prob > 0.5).astype(int) 
@@ -211,7 +215,9 @@ def train_medical_model(df_processed):
         'acc_default': acc_default,
         'cm_optimal': cm_optimal,
         'acc_optimal': max_acc_val,
-        'optimal_threshold': optimal_threshold
+        'optimal_threshold': optimal_threshold,
+        'optimal_fpr': optimal_fpr, # Disimpan untuk grafik
+        'optimal_tpr': optimal_tpr  # Disimpan untuk grafik
     }
     
     coeffs = {'Intercept': log_reg.intercept_[0]}
@@ -378,7 +384,7 @@ if not df_raw.empty:
             threshold = 0.5
             optimal_thresh = metrics_data.get('optimal_threshold', 0.5)
             
-            st.caption(f"Threshold Default: 0.5 | Highest Accuracy Thresh: {optimal_thresh:.3f}")
+            st.caption(f"Threshold Default: 0.5 | Max Accuracy Thresh: {optimal_thresh:.3f}")
 
             if final_prob > threshold:
                 st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%} > {threshold})")
@@ -470,16 +476,12 @@ if not df_raw.empty:
                 fig, ax = plt.subplots(figsize=(5, 4))
                 ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
                 
-                if 'optimal_threshold' in metrics:
-                    # Plot titik max accuracy
-                    # Cari index threshold yang paling dekat dengan optimal_threshold
-                    idx = (np.abs(metrics_data.get('fpr') - 0)).argmin() # Placeholder logic for plot point, 
-                    # better to find index in thresholds array from roc_curve
-                    # Tapi karena thresholds dari roc_curve tidak disimpan semua di metrics dict utama (hanya fpr/tpr),
-                    # kita hanya plot garis bantu visual saja
-                    ax.axvline(x=0, color='gray', linestyle='--') # Dummy
+                if 'optimal_fpr' in metrics and 'optimal_tpr' in metrics:
+                    ax.scatter(metrics['optimal_fpr'], metrics['optimal_tpr'], 
+                               color='red', label='Max Accuracy Point', zorder=5)
                     
                 ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+                ax.legend(loc="lower right")
                 ax.set_title('ROC Curve')
                 st.pyplot(fig)
 
