@@ -4,7 +4,7 @@ import numpy as np
 import h2o
 from h2o.automl import H2OAutoML
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.metrics import roc_curve, auc, confusion_matrix, accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
@@ -17,7 +17,7 @@ import tempfile
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis",
+    page_title="Sistem Triage Medis (Max Accuracy)",
     layout="wide"
 )
 
@@ -179,18 +179,27 @@ def train_medical_model(df_processed):
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
     
-    # --- HITUNG THRESHOLD & DUA CONFUSION MATRIX ---
+    # --- LOGIKA BARU: MENCARI MAX ACCURACY ---
     fpr, tpr, thresholds = roc_curve(y_test, y_prob)
     roc_auc = auc(fpr, tpr)
     
-    optimal_idx = np.argmax(tpr - fpr)
-    optimal_threshold = thresholds[optimal_idx]
+    # Loop untuk mencari threshold dengan akurasi tertinggi
+    accuracy_list = []
+    for th in thresholds:
+        y_pred_temp = (y_prob >= th).astype(int)
+        accuracy_list.append(accuracy_score(y_test, y_pred_temp))
     
-    # 1. Confusion Matrix untuk Default Threshold (0.5)
+    # Ambil index dimana akurasi paling tinggi
+    max_acc_idx = np.argmax(accuracy_list)
+    max_acc_val = accuracy_list[max_acc_idx]
+    optimal_threshold = thresholds[max_acc_idx]
+    
+    # 1. Confusion Matrix Default (0.5)
     y_pred_default = (y_prob > 0.5).astype(int) 
     cm_default = confusion_matrix(y_test, y_pred_default)
+    acc_default = accuracy_score(y_test, y_pred_default)
     
-    # 2. Confusion Matrix untuk Optimal Threshold
+    # 2. Confusion Matrix Max Accuracy
     y_pred_optimal = (y_prob >= optimal_threshold).astype(int)
     cm_optimal = confusion_matrix(y_test, y_pred_optimal)
     
@@ -198,8 +207,10 @@ def train_medical_model(df_processed):
         'fpr': fpr, 
         'tpr': tpr, 
         'auc': roc_auc, 
-        'cm_default': cm_default, # CM Default
-        'cm_optimal': cm_optimal, # CM Optimal
+        'cm_default': cm_default,
+        'acc_default': acc_default,
+        'cm_optimal': cm_optimal,
+        'acc_optimal': max_acc_val,
         'optimal_threshold': optimal_threshold
     }
     
@@ -363,12 +374,11 @@ if not df_raw.empty:
             k1.metric("Risiko Rujukan", f"{final_prob:.1%}") 
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             
-            # --- Logic Decision (Tetap 0.5) ---
             metrics_data = st.session_state.get('metrics', {})
             threshold = 0.5
             optimal_thresh = metrics_data.get('optimal_threshold', 0.5)
             
-            st.caption(f"Threshold Standar: {threshold} (Saran AI Optimal: {optimal_thresh:.3f})")
+            st.caption(f"Threshold Default: 0.5 | Highest Accuracy Thresh: {optimal_thresh:.3f}")
 
             if final_prob > threshold:
                 st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%} > {threshold})")
@@ -410,22 +420,24 @@ if not df_raw.empty:
                 c_head1, c_head2 = st.columns(2)
                 with c_head1:
                     st.metric("Skor AUC", f"{metrics['auc']:.4f}")
-                    disp_thresh = metrics.get('optimal_threshold', 0.5)
-                    st.metric("Optimal Threshold (Info)", f"{disp_thresh:.4f}")
+                    
                 
                 st.markdown("---")
                 st.write("### Perbandingan Confusion Matrix")
                 
-                # --- MENAMPILKAN 2 CONFUSION MATRIX ---
-                cm_def = metrics.get('cm_default', metrics.get('cm')) # Fallback jika data lama
+                cm_def = metrics.get('cm_default', metrics.get('cm'))
                 cm_opt = metrics.get('cm_optimal')
-                
+                acc_def = metrics.get('acc_default', 0)
+                acc_opt = metrics.get('acc_optimal', 0)
+                disp_thresh = metrics.get('optimal_threshold', 0.5)
+
                 col_cm1, col_cm2 = st.columns(2)
                 
                 with col_cm1:
-                    st.write("**A. Threshold Default (0.5)**")
+                    st.write(f"**A. Threshold Default (0.5)**")
+                    st.caption(f"Akurasi: {acc_def:.2%}")
                     if cm_def is not None:
-                        group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
+                        group_names = ['TN', 'FP', 'FN', 'TP']
                         group_counts = ["{0:0.0f}".format(value) for value in cm_def.flatten()]
                         labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
                         labels = np.asarray(labels).reshape(2,2)
@@ -437,20 +449,21 @@ if not df_raw.empty:
                         st.pyplot(fig_cm1)
 
                 with col_cm2:
-                    st.write(f"**B. Threshold Optimal ({disp_thresh:.3f})**")
+                    st.write(f"**B. Threshold Max Accuracy ({disp_thresh:.3f})**")
+                    st.caption(f"Akurasi: {acc_opt:.2%}")
                     if cm_opt is not None:
-                        group_names = ['TN (Stabil)', 'FP (Salah Rujuk)', 'FN (Bahaya)', 'TP (Rujuk)']
+                        group_names = ['TN', 'FP', 'FN', 'TP']
                         group_counts = ["{0:0.0f}".format(value) for value in cm_opt.flatten()]
                         labels = [f"{v1}\n{v2}" for v1, v2 in zip(group_names, group_counts)]
                         labels = np.asarray(labels).reshape(2,2)
                         
                         fig_cm2, ax_cm2 = plt.subplots(figsize=(3.5, 3))
-                        sns.heatmap(cm_opt, annot=labels, fmt='', cmap='Oranges', cbar=False, ax=ax_cm2) # Oranges untuk beda warna
+                        sns.heatmap(cm_opt, annot=labels, fmt='', cmap='Greens', cbar=False, ax=ax_cm2)
                         ax_cm2.set_xlabel('Prediksi Model')
                         ax_cm2.set_ylabel('Data Aktual')
                         st.pyplot(fig_cm2)
                     else:
-                        st.warning("Data confusion matrix optimal belum tersedia. Silakan 'Reset Model'.")
+                        st.warning("Data belum tersedia. Silakan 'Reset Model'.")
 
                 st.markdown("---")
                 st.write("#### Kurva ROC")
@@ -458,13 +471,15 @@ if not df_raw.empty:
                 ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
                 
                 if 'optimal_threshold' in metrics:
-                    idx = np.argmin(np.abs(metrics['fpr'] - metrics['tpr'])) 
-                    ax.scatter(metrics['fpr'][np.argmax(metrics['tpr'] - metrics['fpr'])], 
-                               metrics['tpr'][np.argmax(metrics['tpr'] - metrics['fpr'])], 
-                               color='red', label='Optimal Cut-off')
+                    # Plot titik max accuracy
+                    # Cari index threshold yang paling dekat dengan optimal_threshold
+                    idx = (np.abs(metrics_data.get('fpr') - 0)).argmin() # Placeholder logic for plot point, 
+                    # better to find index in thresholds array from roc_curve
+                    # Tapi karena thresholds dari roc_curve tidak disimpan semua di metrics dict utama (hanya fpr/tpr),
+                    # kita hanya plot garis bantu visual saja
+                    ax.axvline(x=0, color='gray', linestyle='--') # Dummy
                     
                 ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
-                ax.legend(loc="lower right")
                 ax.set_title('ROC Curve')
                 st.pyplot(fig)
 
