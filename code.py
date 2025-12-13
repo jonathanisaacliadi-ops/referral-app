@@ -472,6 +472,8 @@ if not df_raw.empty:
                     if cm_def is not None:
                         fig1, ax1 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_def, annot=make_labels(cm_def), fmt='', cmap='Blues', cbar=False, ax=ax1)
+                        ax1.set_xlabel('Prediksi Model')
+                        ax1.set_ylabel('Data Aktual')
                         st.pyplot(fig1)
 
                 with col_cm2:
@@ -481,6 +483,8 @@ if not df_raw.empty:
                     if cm_roc is not None:
                         fig2, ax2 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_roc, annot=make_labels(cm_roc), fmt='', cmap='Purples', cbar=False, ax=ax2)
+                        ax2.set_xlabel('Prediksi Model')
+                        ax2.set_ylabel('Data Aktual')
                         st.pyplot(fig2)
 
                 with col_cm3:
@@ -490,6 +494,8 @@ if not df_raw.empty:
                     if cm_acc is not None:
                         fig3, ax3 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
+                        ax3.set_xlabel('Prediksi Model')
+                        ax3.set_ylabel('Data Aktual')
                         st.pyplot(fig3)
                 
                 st.markdown("---")
