@@ -499,6 +499,8 @@ if not df_raw.empty:
                 ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
                 ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
                 ax.set_title('ROC Curve')
+                ax.set_xlabel('False Positive Rate')
+                ax.set_ylabel('True Positive Rate')
                 st.pyplot(fig)
 
         # --- TABEL DAN INTERCEPT ---
