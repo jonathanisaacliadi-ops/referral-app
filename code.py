@@ -17,7 +17,7 @@ import tempfile
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (Final Terpadu)",
+    page_title="Sistem Triage Medis (Final Lengkap + ROC)",
     layout="wide"
 )
 
@@ -494,8 +494,17 @@ if not df_raw.empty:
                         fig3, ax3 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
                         st.pyplot(fig3)
+                
+                # --- [FIXED] GRAFIK ROC DIKEMBALIKAN DI SINI ---
+                st.markdown("---")
+                st.write("#### Kurva ROC")
+                fig, ax = plt.subplots(figsize=(6, 4))
+                ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
+                ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+                ax.set_title('ROC Curve')
+                st.pyplot(fig)
 
-        # --- LOGIKA TAMPILAN TABEL BARU ---
+        # --- TABEL DAN INTERCEPT ---
         with tab2:
             if coeffs:
                 st.markdown("#### Detail Bobot Variabel")
