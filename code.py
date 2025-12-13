@@ -265,11 +265,13 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
         critical_reasons.append("Saturasi Oksigen Kritis (<=88%)")
         
     # 3. Tanda Vital Ekstrem Lainnya
-    if input_dict['Temp_Raw'] >= 40.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
+    if input_dict['Temp_Raw'] >= 41: critical_reasons.append("Hiperpireksia (>=41°C)")
     if input_dict['Heart_Raw'] >= 220 - p_age: critical_reasons.append(f"Takikardia Ekstrem (>= {220 - p_age} bpm)")
     
     if critical_reasons:
         return 0.999, critical_reasons 
+
+
 
     # --- PERHITUNGAN MODEL ---
     try:
@@ -449,8 +451,6 @@ if not df_raw.empty:
 
         with tab1:
             if metrics:
-                # 1. AUC
-                st.metric("Skor AUC", f"{metrics['auc']:.4f}")
                 
                 st.markdown("---")
                 st.write("### Perbandingan Performa")
@@ -496,8 +496,8 @@ if not df_raw.empty:
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
                         st.pyplot(fig3)
                 
-                # --- [FIXED] GRAFIK ROC DIKEMBALIKAN DI SINI ---
                 st.markdown("---")
+                st.metric("Skor AUC", f"{metrics['auc']:.4f}")
                 st.write("#### Kurva ROC")
                 fig, ax = plt.subplots(figsize=(6, 4))
                 ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
@@ -510,26 +510,24 @@ if not df_raw.empty:
             if coeffs:
                 st.markdown("#### Detail Bobot Variabel")
                 
-                # Copy data agar aman
                 plot_data = coeffs.copy()
                 table_data = coeffs.copy()
                 
-                # A. DATA UNTUK GRAFIK (Tanpa Intercept, Tanpa Metadata)
                 for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg', 'Intercept']:
                     if k in plot_data: del plot_data[k]
                 
-                # B. DATA UNTUK TABEL (Ada Intercept, Tanpa Metadata)
                 for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg']:
                     if k in table_data: del table_data[k]
 
-                # 1. Plot Grafik
+                # Plot
                 df_plot = pd.DataFrame.from_dict(plot_data, orient='index', columns=['Bobot'])
                 df_plot['Bobot'] = pd.to_numeric(df_plot['Bobot'], errors='coerce')
                 df_plot = df_plot.dropna().sort_values(by='Bobot', ascending=False)
                 df_plot.index = df_plot.index.map(lambda x: variable_map.get(x, x))
                 st.bar_chart(df_plot)
                 
-                # 2. Tampilkan Tabel (Dengan Intercept)
+
+                # Tabel
                 df_table = pd.DataFrame.from_dict(table_data, orient='index', columns=['Bobot'])
                 df_table['Bobot'] = pd.to_numeric(df_table['Bobot'], errors='coerce')
                 df_table = df_table.dropna().sort_values(by='Bobot', ascending=False)
