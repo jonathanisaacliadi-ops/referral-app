@@ -17,7 +17,7 @@ import tempfile
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (Final Lengkap)",
+    page_title="Sistem Triage Medis (Final Terpadu)",
     layout="wide"
 )
 
@@ -467,7 +467,7 @@ if not df_raw.empty:
                     labels = [f"{v1}\n{v2}" for v1, v2 in zip(names, counts)]
                     return np.asarray(labels).reshape(2,2)
 
-                # --- BAGIAN INI MENAMPILKAN F1 SCORE & PRECISION ---
+                # --- METRIK F1, REC, PREC ---
                 with col_cm1:
                     st.write(f"**A. Default (0.5)**")
                     st.caption(f"Acc: {metrics.get('acc_default', 0):.1%} | Rec: {metrics.get('rec_default', 0):.1%}")
@@ -495,35 +495,38 @@ if not df_raw.empty:
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
                         st.pyplot(fig3)
 
-        # --- PERBAIKAN DI SINI: MENAMPILKAN TABEL DAN INTERCEPT ---
+        # --- LOGIKA TAMPILAN TABEL BARU ---
         with tab2:
             if coeffs:
                 st.markdown("#### Detail Bobot Variabel")
                 
-                # 1. Tampilkan Intercept Secara Terpisah
-                intercept_val = coeffs.get('Intercept', 0)
-                st.metric("Intercept Score (Nilai Bias)", f"{intercept_val:.4f}")
+                # Copy data agar aman
+                plot_data = coeffs.copy()
+                table_data = coeffs.copy()
                 
-                # 2. Persiapkan Data untuk Chart & Tabel
-                plot_coeffs = coeffs.copy()
-                # Hapus metadata dan Intercept dari list plotting (agar skala grafik bagus)
+                # A. DATA UNTUK GRAFIK (Tanpa Intercept, Tanpa Metadata)
                 for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg', 'Intercept']:
-                    if k in plot_coeffs: del plot_coeffs[k]
+                    if k in plot_data: del plot_data[k]
+                
+                # B. DATA UNTUK TABEL (Ada Intercept, Tanpa Metadata)
+                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg']:
+                    if k in table_data: del table_data[k]
 
-                coef_df = pd.DataFrame.from_dict(plot_coeffs, orient='index', columns=['Bobot'])
-                coef_df['Bobot'] = pd.to_numeric(coef_df['Bobot'], errors='coerce')
-                coef_df = coef_df.dropna()
+                # 1. Plot Grafik
+                df_plot = pd.DataFrame.from_dict(plot_data, orient='index', columns=['Bobot'])
+                df_plot['Bobot'] = pd.to_numeric(df_plot['Bobot'], errors='coerce')
+                df_plot = df_plot.dropna().sort_values(by='Bobot', ascending=False)
+                df_plot.index = df_plot.index.map(lambda x: variable_map.get(x, x))
+                st.bar_chart(df_plot)
                 
-                # Mapping nama variabel agar lebih mudah dibaca
-                coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
-                coef_df = coef_df.sort_values(by='Bobot', ascending=False)
+                # 2. Tampilkan Tabel (Dengan Intercept)
+                df_table = pd.DataFrame.from_dict(table_data, orient='index', columns=['Bobot'])
+                df_table['Bobot'] = pd.to_numeric(df_table['Bobot'], errors='coerce')
+                df_table = df_table.dropna().sort_values(by='Bobot', ascending=False)
+                df_table.index = df_table.index.map(lambda x: variable_map.get(x, x))
                 
-                # 3. Bar Chart
-                st.bar_chart(coef_df)
-                
-                # 4. Tabel Data (Dimunculkan Kembali)
-                st.write("### Tabel Angka Presisi")
-                st.dataframe(coef_df.style.format("{:.4f}"))
+                st.write("### Tabel Angka Presisi (Termasuk Intercept)")
+                st.dataframe(df_table.style.format("{:.4f}"))
 
 else:
     st.error("Gagal memulai aplikasi.")
