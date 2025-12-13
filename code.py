@@ -74,7 +74,7 @@ def preprocess_data(df):
     processed['Age'] = pd.to_numeric(processed['Age'], errors='coerce').fillna(45)
     
 
-    processed['Flag_High_BP'] = ((processed['Sys_Raw'] >= 140) | (processed['Dia_Raw'] >= 90)).astype(int)
+    processed['Flag_High_BP'] = ((processed['Sys_Raw'] >= 120) | (processed['Dia_Raw'] >= 80)).astype(int)
 
 
     # Tidak ada di dataset tapi penting
