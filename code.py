@@ -200,7 +200,7 @@ def train_medical_model(df_processed):
 
     # Perhitungan metrik untuk 3 threshold berbeda
     # 1. Default Threshold (0.5)
-    y_pred_def = (y_prob >= 0.3).astype(int)
+    y_pred_def = (y_prob >= 0.1).astype(int)
     m_def = calc_metrics(y_test, y_pred_def)
 
     # 2. ROC Optimal
