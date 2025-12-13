@@ -406,7 +406,7 @@ if not df_raw.empty:
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             
             metrics_data = st.session_state.get('metrics', {})
-            threshold = 0.5
+            threshold = 0.1
             best_thresh = metrics_data.get('thresh_acc', 0.5)
             
             st.caption(f"Threshold Default: 0.5")
