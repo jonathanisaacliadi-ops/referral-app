@@ -466,8 +466,8 @@ if not df_raw.empty:
                 # --- METRIK F1, REC, PREC ---
                 with col_cm1:
                     st.write(f"**A. Default (0.5)**")
-                    st.caption(f"Acc: {metrics.get('acc_default', 0):.1%} | Rec: {metrics.get('rec_default', 0):.1%}")
-                    st.caption(f"Prec: {metrics.get('prec_default', 0):.1%} | F1: {metrics.get('f1_default', 0):.1%}")
+                    st.caption(f"Acc: {metrics.get('acc_default', 0):.2%} | Rec: {metrics.get('rec_default', 0):.2%}")
+                    st.caption(f"Prec: {metrics.get('prec_default', 0):.2%} | F1: {metrics.get('f1_default', 0):.2%}")
                     if cm_def is not None:
                         fig1, ax1 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_def, annot=make_labels(cm_def), fmt='', cmap='Blues', cbar=False, ax=ax1)
@@ -475,8 +475,8 @@ if not df_raw.empty:
 
                 with col_cm2:
                     st.write(f"**B. ROC Opt ({metrics.get('thresh_roc', 0):.3f})**")
-                    st.caption(f"Acc: {metrics.get('acc_roc', 0):.1%} | Rec: {metrics.get('rec_roc', 0):.1%}")
-                    st.caption(f"Prec: {metrics.get('prec_roc', 0):.1%} | F1: {metrics.get('f1_roc', 0):.1%}")
+                    st.caption(f"Acc: {metrics.get('acc_roc', 0):.2%} | Rec: {metrics.get('rec_roc', 0):.2%}")
+                    st.caption(f"Prec: {metrics.get('prec_roc', 0):.2%} | F1: {metrics.get('f1_roc', 0):.2%}")
                     if cm_roc is not None:
                         fig2, ax2 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_roc, annot=make_labels(cm_roc), fmt='', cmap='Purples', cbar=False, ax=ax2)
@@ -484,8 +484,8 @@ if not df_raw.empty:
 
                 with col_cm3:
                     st.write(f"**C. Max Acc ({metrics.get('thresh_acc', 0):.3f})**")
-                    st.caption(f"Acc: {metrics.get('acc_max', 0):.1%} | Rec: {metrics.get('rec_max', 0):.1%}")
-                    st.caption(f"Prec: {metrics.get('prec_max', 0):.1%} | F1: {metrics.get('f1_max', 0):.1%}")
+                    st.caption(f"Acc: {metrics.get('acc_max', 0):.2%} | Rec: {metrics.get('rec_max', 0):.2%}")
+                    st.caption(f"Prec: {metrics.get('prec_max', 0):.2%} | F1: {metrics.get('f1_max', 0):.2%}")
                     if cm_acc is not None:
                         fig3, ax3 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
