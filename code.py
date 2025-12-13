@@ -17,7 +17,7 @@ import tempfile
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (Multi-Threshold + Full Metrics)",
+    page_title="Sistem Triage Medis (O2 Threshold 88%)",
     layout="wide"
 )
 
@@ -71,6 +71,10 @@ def preprocess_data(df):
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
+    # Flag High BP (Gray Zone) > 140/90 masuk ke model
+    processed['Flag_High_BP'] = ((processed['Sys_Raw'] > 140) | (processed['Dia_Raw'] > 90)).astype(int)
+    
+    # Flag Crisis (>180) untuk Golden Rule (nanti di-drop dari training)
     processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
     
     flags = processed.apply(extract_features_from_symptoms, axis=1)
@@ -84,12 +88,13 @@ def preprocess_data(df):
     return processed[[
         'Age', 
         'Sys_Raw', 'Dia_Raw', 'Oxygen_Raw', 'Temp_Raw', 'Heart_Raw', 
-        'Flag_HTN_Crisis',
+        'Flag_High_BP',     
+        'Flag_HTN_Crisis',  
         'Sym_Dyspnea', 'Sym_Fever',
         'Referral_Required'
     ]]
 
-# --- 4. Pelatihan Model (H2O + LogReg + Full Metrics) ---
+# --- 4. Pelatihan Model (H2O + LogReg) ---
 @st.cache_resource
 def train_medical_model(df_processed):
     use_gbm = True
@@ -108,7 +113,8 @@ def train_medical_model(df_processed):
         print(f"H2O Init Failed: {e}", file=sys.stderr)
         use_gbm = False
 
-    X = df_processed.drop('Referral_Required', axis=1)
+    # Drop Flag_HTN_Crisis dari training karena sudah jadi Golden Rule
+    X = df_processed.drop(['Referral_Required', 'Flag_HTN_Crisis'], axis=1)
     y = df_processed['Referral_Required']
     
     try:
@@ -152,7 +158,9 @@ def train_medical_model(df_processed):
         df_new = pd.DataFrame(index=df_orig.index)
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
-        df_new['Flag_HTN_Crisis'] = df_orig['Flag_HTN_Crisis'] 
+        
+        # Fitur LogReg: Flag High BP & Dyspnea
+        df_new['Flag_High_BP'] = df_orig['Flag_High_BP'] 
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea'] 
         return df_new
 
@@ -176,11 +184,10 @@ def train_medical_model(df_processed):
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
     
-    # --- PERHITUNGAN 3 JENIS THRESHOLD & METRIK LENGKAP ---
+    # --- METRICS CALCULATION ---
     fpr, tpr, thresholds = roc_curve(y_test, y_prob)
     roc_auc = auc(fpr, tpr)
     
-    # Fungsi helper untuk hitung metrik
     def calc_metrics(y_true, y_pred):
         return {
             'acc': accuracy_score(y_true, y_pred),
@@ -194,13 +201,13 @@ def train_medical_model(df_processed):
     y_pred_def = (y_prob >= 0.5).astype(int)
     m_def = calc_metrics(y_test, y_pred_def)
 
-    # 2. ROC Optimal Threshold (Youden's Index)
+    # 2. ROC Optimal
     youden_idx = np.argmax(tpr - fpr)
     thresh_roc = thresholds[youden_idx]
     y_pred_roc = (y_prob >= thresh_roc).astype(int)
     m_roc = calc_metrics(y_test, y_pred_roc)
 
-    # 3. Max Accuracy Threshold
+    # 3. Max Accuracy
     accuracy_list = []
     for th in thresholds:
         y_pred_temp = (y_prob >= th).astype(int)
@@ -244,13 +251,26 @@ def train_medical_model(df_processed):
 
 def calculate_final_prob(input_dict, ml_score, coeffs):
     critical_reasons = []
-    if input_dict['Oxygen_Raw'] <= 90: critical_reasons.append("Saturasi Oksigen Kritis (<=90%)")
+    
+    # --- GOLDEN RULE LOGIC (Safety Check) ---
+    
+    # 1. KRISIS HIPERTENSI
+    if input_dict['Sys_Raw'] >= 180:
+        critical_reasons.append("Krisis Hipertensi (Sistolik >= 180 mmHg) [GOLDEN RULE]")
+    
+    # 2. SATURASI OKSIGEN KRITIS (Perubahan di sini: Threshold <= 88)
+    if input_dict['Oxygen_Raw'] <= 88: 
+        critical_reasons.append("Saturasi Oksigen Kritis (<=88%) [GOLDEN RULE]")
+        
+    # 3. Tanda Vital Ekstrem Lainnya
     if input_dict['Temp_Raw'] >= 39.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
-    if input_dict['Sys_Raw'] <= 90: critical_reasons.append("Hipotensi Berat (<=90 mmHg)")
     if input_dict['Heart_Raw'] >= 140: critical_reasons.append("Takikardia Ekstrem (>=140 bpm)")
     
+    # Jika ada golden rule apapun, langsung vonis Rujuk 99.9%
     if critical_reasons:
         return 0.999, critical_reasons 
+
+    # --- PERHITUNGAN MODEL (Jika Lolos Golden Rule) ---
     try:
         means = np.array(coeffs['scaler_mean'])
         scales = np.array(coeffs['scaler_scale'])
@@ -260,7 +280,7 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
         return 0.5, []
     
     data_row = {
-        'Flag_HTN_Crisis': input_dict['Flag_HTN_Crisis'],
+        'Flag_High_BP': input_dict['Flag_High_BP'],
         'Sym_Dyspnea': input_dict['Sym_Dyspnea']
     }
     
@@ -298,7 +318,7 @@ if not df_raw.empty:
     df_model = preprocess_data(df_raw)
     
     if 'model_ready' not in st.session_state:
-        with st.spinner("Memproses Model Mencoba H2O"):
+        with st.spinner("Memproses Model..."):
             gbm, logreg, coef, metr = train_medical_model(df_model)
             
             if logreg is not None:
@@ -310,16 +330,14 @@ if not df_raw.empty:
             else:
                 st.error("Gagal melatih model dasar.")
 
-    st.title("Sistem Triage & Rujukan Klinis")
-    st.write("Sistem pendukung keputusan klinis berbasis Machine Learning (GBM + LogReg).")
+    st.title("Sistem Triage Medis")
+    st.write("Aturan Emas: O2 ≤ 88% atau Sistolik ≥ 180 mmHg = Rujuk Otomatis.")
     
     if st.session_state.get('model_ready'):
         use_gbm = st.session_state.coef.get('use_gbm', False)
         if not use_gbm:
             error_details = st.session_state.coef.get('error_msg', 'Unknown Error')
-            st.warning("⚠️ Mode Terbatas: Komponen AI Lanjut (GBM) tidak aktif. Prediksi menggunakan Model Standar (LogReg).")
-            with st.expander("Lihat Detail Error Teknis (Untuk Debugging)"):
-                st.code(error_details)
+            st.warning("⚠️ Mode Terbatas: LogReg Only.")
     
     st.markdown("---")
 
@@ -365,7 +383,7 @@ if not df_raw.empty:
                 'Age': p_age, 
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
                 'Oxygen_Raw': p_o2, 'Temp_Raw': p_temp, 'Heart_Raw': p_hr,
-                'Flag_HTN_Crisis': 1 if p_sys >= 180 else 0,
+                'Flag_High_BP': 1 if (p_sys > 140 or p_dia > 90) else 0, 
                 'Sym_Dyspnea': flags['Sym_Dyspnea'],
                 'Sym_Fever': flags['Sym_Fever']
             } 
@@ -389,13 +407,11 @@ if not df_raw.empty:
             k1.metric("Risiko Rujukan", f"{final_prob:.1%}") 
             k2.metric("Tekanan Darah", f"{int(p_sys)}/{int(p_dia)}")
             
-            # --- Logic Decision ---
             metrics_data = st.session_state.get('metrics', {})
             threshold = 0.5
-            
             best_thresh = metrics_data.get('thresh_acc', 0.5)
             
-            st.caption(f"Threshold Default: 0.5 | Recommended (Max Acc): {best_thresh:.3f}")
+            st.caption(f"Threshold Default: 0.5 | Recommended: {best_thresh:.3f}")
 
             if final_prob > threshold:
                 st.error(f"RUJUKAN DIPERLUKAN (Risiko {final_prob:.1%} > {threshold})")
@@ -405,7 +421,7 @@ if not df_raw.empty:
                     for reason in critical_reasons:
                         st.warning(f"- {reason} [CRITICAL]")
                 else:
-                    if p_sys >= 180: st.warning("- Krisis Hipertensi (JNC8)")
+                    if (p_sys > 140 or p_dia > 90): st.warning("- Hipertensi (High BP Flag)")
                     if flags['Sym_Dyspnea']: st.warning("- Keluhan Sesak Napas")
                     if flags['Sym_Fever']: st.warning("- Gejala Demam")
                     if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
@@ -418,30 +434,26 @@ if not df_raw.empty:
 
 
     st.markdown("---")
-    with st.expander("Detail Model, Rumus & Data", expanded=False):
-        tab1, tab2, tab3 = st.tabs(["Performa & Metrik", "Rumus & Bobot", "Dataset"])
+    with st.expander("Detail Model & Metrik", expanded=False):
+        tab1, tab2 = st.tabs(["Performa & Metrik", "Bobot Variabel"])
         
         metrics = st.session_state.get('metrics')
         coeffs = st.session_state.get('coef')
 
         variable_map = {
-            'Intercept': 'Intercept (Nilai Dasar)',
-            'ML_Score': 'Skor Prediksi AI (ML_Score)',
-            'Sym_Dyspnea': 'Gejala Sesak Napas',
-            'Sym_Fever': 'Gejala Demam',
-            'Flag_HTN_Crisis': 'Krisis Hipertensi'
+            'Intercept': 'Intercept',
+            'ML_Score': 'Skor AI (GBM)',
+            'Sym_Dyspnea': 'Gejala Sesak',
+            'Flag_High_BP': 'Tensi Tinggi (>140/90)'
         }
 
         with tab1:
             if metrics:
-                c_head1, c_head2 = st.columns(2)
-                with c_head1:
-                    st.metric("Skor AUC", f"{metrics['auc']:.4f}")
+                st.metric("Skor AUC", f"{metrics['auc']:.4f}")
                 
                 st.markdown("---")
-                st.write("### Perbandingan Performa (3 Skenario Threshold)")
+                st.write("### Perbandingan Performa")
                 
-                # --- MENAMPILKAN 3 CONFUSION MATRIX + METRIK LENGKAP ---
                 cm_def = metrics.get('cm_default')
                 cm_roc = metrics.get('cm_roc')
                 cm_acc = metrics.get('cm_acc')
@@ -458,55 +470,29 @@ if not df_raw.empty:
                 # 1. Default
                 with col_cm1:
                     st.write(f"**A. Default (0.5)**")
-                    st.caption(f"Akurasi: {metrics.get('acc_default', 0):.2%}")
-                    # Menambahkan Recall, Presisi, F1
-                    st.caption(f"Recall: {metrics.get('rec_default', 0):.2%} | Presisi: {metrics.get('prec_default', 0):.2%}")
-                    st.caption(f"F1-Score: {metrics.get('f1_default', 0):.2%}")
-                    
+                    st.caption(f"Acc: {metrics.get('acc_default', 0):.1%} | Rec: {metrics.get('rec_default', 0):.1%}")
                     if cm_def is not None:
                         fig1, ax1 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_def, annot=make_labels(cm_def), fmt='', cmap='Blues', cbar=False, ax=ax1)
-                        ax1.set_ylabel('Aktual')
                         st.pyplot(fig1)
 
                 # 2. ROC Optimal
                 with col_cm2:
-                    th_roc = metrics.get('thresh_roc', 0)
-                    st.write(f"**B. ROC Optimal ({th_roc:.3f})**")
-                    st.caption(f"Akurasi: {metrics.get('acc_roc', 0):.2%}")
-                    # Menambahkan Recall, Presisi, F1
-                    st.caption(f"Recall: {metrics.get('rec_roc', 0):.2%} | Presisi: {metrics.get('prec_roc', 0):.2%}")
-                    st.caption(f"F1-Score: {metrics.get('f1_roc', 0):.2%}")
-                    
+                    st.write(f"**B. ROC Opt ({metrics.get('thresh_roc', 0):.3f})**")
+                    st.caption(f"Acc: {metrics.get('acc_roc', 0):.1%} | Rec: {metrics.get('rec_roc', 0):.1%}")
                     if cm_roc is not None:
                         fig2, ax2 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_roc, annot=make_labels(cm_roc), fmt='', cmap='Purples', cbar=False, ax=ax2)
-                        ax2.set_yticks([]) 
                         st.pyplot(fig2)
 
                 # 3. Max Accuracy
                 with col_cm3:
-                    th_acc = metrics.get('thresh_acc', 0)
-                    st.write(f"**C. Max Accuracy ({th_acc:.3f})**")
-                    st.caption(f"Akurasi: {metrics.get('acc_max', 0):.2%}")
-                    # Menambahkan Recall, Presisi, F1
-                    st.caption(f"Recall: {metrics.get('rec_max', 0):.2%} | Presisi: {metrics.get('prec_max', 0):.2%}")
-                    st.caption(f"F1-Score: {metrics.get('f1_max', 0):.2%}")
-                    
+                    st.write(f"**C. Max Acc ({metrics.get('thresh_acc', 0):.3f})**")
+                    st.caption(f"Acc: {metrics.get('acc_max', 0):.1%} | Rec: {metrics.get('rec_max', 0):.1%}")
                     if cm_acc is not None:
                         fig3, ax3 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
-                        ax3.set_yticks([]) 
                         st.pyplot(fig3)
-
-                st.markdown("---")
-                st.write("#### Kurva ROC")
-                fig, ax = plt.subplots(figsize=(6, 4))
-                ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
-                ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
-                ax.set_title('ROC Curve')
-                st.pyplot(fig)
-
 
         with tab2:
             if coeffs:
@@ -516,7 +502,6 @@ if not df_raw.empty:
                     if k in plot_coeffs: del plot_coeffs[k]
 
                 coef_df = pd.DataFrame.from_dict(plot_coeffs, orient='index', columns=['Bobot'])
-                
                 coef_df['Bobot'] = pd.to_numeric(coef_df['Bobot'], errors='coerce')
                 coef_df = coef_df.dropna()
                 
@@ -525,13 +510,6 @@ if not df_raw.empty:
                 plot_df = plot_df.sort_values(by='Bobot', ascending=False)
                 
                 st.bar_chart(plot_df)
-                
-                coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
-                st.dataframe(coef_df.style.format("{:.4f}"))
-
-        with tab3:
-            st.markdown(f"Total Data: {len(df_raw)} Pasien")
-            st.dataframe(df_raw)
 
 else:
     st.error("Gagal memulai aplikasi.")
