@@ -71,9 +71,10 @@ def preprocess_data(df):
     processed['Oxygen_Raw'] = pd.to_numeric(processed['Oxygen_Saturation_%'], errors='coerce').fillna(98)
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
+    processed['Age'] = pd.to_numeric(processed['Age'], errors='coerce').fillna(45)
     
 
-    processed['Flag_High_BP'] = ((processed['Sys_Raw'] > 140) | (processed['Dia_Raw'] > 90)).astype(int)
+    processed['Flag_High_BP'] = ((processed['Sys_Raw'] >= 140) | (processed['Dia_Raw'] >= 90)).astype(int)
 
 
     # Tidak ada di dataset tapi penting
