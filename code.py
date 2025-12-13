@@ -185,7 +185,7 @@ def train_medical_model(df_processed):
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
     
     # --- Kalkulasi Metrik ---
-    fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+    fpr, tpr, thresholds = roc_curve(y_test, y_prob, drop_intermediate=False)
     roc_auc = auc(fpr, tpr)
     
     def calc_metrics(y_true, y_pred):
