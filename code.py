@@ -17,7 +17,7 @@ import tempfile
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (O2 Threshold 88%)",
+    page_title="Sistem Triage Medis (Final)",
     layout="wide"
 )
 
@@ -197,6 +197,8 @@ def train_medical_model(df_processed):
             'cm': confusion_matrix(y_true, y_pred)
         }
 
+
+    # Different Threshold Evaluations
     # 1. Default Threshold (0.5)
     y_pred_def = (y_prob >= 0.5).astype(int)
     m_def = calc_metrics(y_test, y_pred_def)
@@ -213,6 +215,8 @@ def train_medical_model(df_processed):
         y_pred_temp = (y_prob >= th).astype(int)
         accuracy_list.append(accuracy_score(y_test, y_pred_temp))
     
+
+
     max_acc_idx = np.argmax(accuracy_list)
     thresh_acc = thresholds[max_acc_idx]
     y_pred_acc = (y_prob >= thresh_acc).astype(int)
@@ -258,7 +262,7 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     if input_dict['Sys_Raw'] >= 180:
         critical_reasons.append("Krisis Hipertensi (Sistolik >= 180 mmHg) [GOLDEN RULE]")
     
-    # 2. SATURASI OKSIGEN KRITIS (Perubahan di sini: Threshold <= 88)
+    # 2. SATURASI OKSIGEN KRITIS (Threshold <= 88)
     if input_dict['Oxygen_Raw'] <= 88: 
         critical_reasons.append("Saturasi Oksigen Kritis (<=88%) [GOLDEN RULE]")
         
@@ -449,6 +453,7 @@ if not df_raw.empty:
 
         with tab1:
             if metrics:
+                # 1. AUC
                 st.metric("Skor AUC", f"{metrics['auc']:.4f}")
                 
                 st.markdown("---")
@@ -467,33 +472,35 @@ if not df_raw.empty:
                     labels = [f"{v1}\n{v2}" for v1, v2 in zip(names, counts)]
                     return np.asarray(labels).reshape(2,2)
 
-                # 1. Default
+                # --- BAGIAN INI MENAMPILKAN F1 SCORE & PRECISION ---
                 with col_cm1:
                     st.write(f"**A. Default (0.5)**")
                     st.caption(f"Acc: {metrics.get('acc_default', 0):.1%} | Rec: {metrics.get('rec_default', 0):.1%}")
+                    st.caption(f"Prec: {metrics.get('prec_default', 0):.1%} | F1: {metrics.get('f1_default', 0):.1%}")
                     if cm_def is not None:
                         fig1, ax1 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_def, annot=make_labels(cm_def), fmt='', cmap='Blues', cbar=False, ax=ax1)
                         st.pyplot(fig1)
 
-                # 2. ROC Optimal
                 with col_cm2:
                     st.write(f"**B. ROC Opt ({metrics.get('thresh_roc', 0):.3f})**")
                     st.caption(f"Acc: {metrics.get('acc_roc', 0):.1%} | Rec: {metrics.get('rec_roc', 0):.1%}")
+                    st.caption(f"Prec: {metrics.get('prec_roc', 0):.1%} | F1: {metrics.get('f1_roc', 0):.1%}")
                     if cm_roc is not None:
                         fig2, ax2 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_roc, annot=make_labels(cm_roc), fmt='', cmap='Purples', cbar=False, ax=ax2)
                         st.pyplot(fig2)
 
-                # 3. Max Accuracy
                 with col_cm3:
                     st.write(f"**C. Max Acc ({metrics.get('thresh_acc', 0):.3f})**")
                     st.caption(f"Acc: {metrics.get('acc_max', 0):.1%} | Rec: {metrics.get('rec_max', 0):.1%}")
+                    st.caption(f"Prec: {metrics.get('prec_max', 0):.1%} | F1: {metrics.get('f1_max', 0):.1%}")
                     if cm_acc is not None:
                         fig3, ax3 = plt.subplots(figsize=(3, 2.5))
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
                         st.pyplot(fig3)
 
+        # 2. Bobot Variabel
         with tab2:
             if coeffs:
                 st.markdown("#### Bobot Variabel (Scaled)")
