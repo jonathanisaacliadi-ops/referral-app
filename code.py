@@ -36,7 +36,7 @@ def load_fixed_dataset():
         st.error("DATABASE TIDAK DITEMUKAN. Pastikan file 'disease_diagnosis.csv' sudah diupload.")
     return pd.DataFrame()
 
-# --- 3. Feature Engineering ---
+# --- 3. Fitur ---
 def get_column_options(df, col_name):
     if df.empty or col_name not in df.columns: return []
     items = df[col_name].unique()
@@ -57,6 +57,7 @@ def extract_features_from_symptoms(row_or_list):
         'Sym_Fever': 1 if 'fever' in text_sym else 0
     }
 
+
 def preprocess_data(df):
     processed = df.copy()
     
@@ -71,11 +72,12 @@ def preprocess_data(df):
     processed['Temp_Raw'] = pd.to_numeric(processed['Body_Temperature_C'], errors='coerce').fillna(36.5)
     processed['Heart_Raw'] = pd.to_numeric(processed['Heart_Rate_bpm'], errors='coerce').fillna(80)
     
-    # Flag High BP (Gray Zone) > 140/90 masuk ke model
+
     processed['Flag_High_BP'] = ((processed['Sys_Raw'] > 140) | (processed['Dia_Raw'] > 90)).astype(int)
-    
-    # Flag Crisis (>180) untuk Golden Rule (nanti di-drop dari training)
-    processed['Flag_HTN_Crisis'] = (processed['Sys_Raw'] >= 180).astype(int)
+
+
+    # Tidak ada di dataset tapi penting
+    processed['Flag_HTN_Crisis'] = ((processed['Sys_Raw'] >= 180) | (processed['Dia_Raw'] >= 120)).astype(int)
     
     flags = processed.apply(extract_features_from_symptoms, axis=1)
     flags_df = pd.DataFrame(flags.tolist(), index=processed.index)
@@ -113,7 +115,6 @@ def train_medical_model(df_processed):
         print(f"H2O Init Failed: {e}", file=sys.stderr)
         use_gbm = False
 
-    # Drop Flag_HTN_Crisis dari training karena sudah jadi Golden Rule
     X = df_processed.drop(['Referral_Required', 'Flag_HTN_Crisis'], axis=1)
     y = df_processed['Referral_Required']
     
@@ -158,8 +159,6 @@ def train_medical_model(df_processed):
         df_new = pd.DataFrame(index=df_orig.index)
         if use_ml and ml_scores is not None:
             df_new['ML_Score'] = ml_scores
-        
-        # Fitur LogReg: Flag High BP & Dyspnea
         df_new['Flag_High_BP'] = df_orig['Flag_High_BP'] 
         df_new['Sym_Dyspnea'] = df_orig['Sym_Dyspnea'] 
         return df_new
@@ -184,7 +183,7 @@ def train_medical_model(df_processed):
     
     y_prob = log_reg.predict_proba(X_test_final)[:, 1]
     
-    # --- METRICS CALCULATION ---
+    # --- Kalkulasi Metrik ---
     fpr, tpr, thresholds = roc_curve(y_test, y_prob)
     roc_auc = auc(fpr, tpr)
     
@@ -197,6 +196,8 @@ def train_medical_model(df_processed):
             'cm': confusion_matrix(y_true, y_pred)
         }
 
+
+    # Perhitungan metrik untuk 3 threshold berbeda
     # 1. Default Threshold (0.5)
     y_pred_def = (y_prob >= 0.5).astype(int)
     m_def = calc_metrics(y_test, y_pred_def)
@@ -213,6 +214,8 @@ def train_medical_model(df_processed):
         y_pred_temp = (y_prob >= th).astype(int)
         accuracy_list.append(accuracy_score(y_test, y_pred_temp))
     
+
+
     max_acc_idx = np.argmax(accuracy_list)
     thresh_acc = thresholds[max_acc_idx]
     y_pred_acc = (y_prob >= thresh_acc).astype(int)
@@ -252,7 +255,7 @@ def train_medical_model(df_processed):
 def calculate_final_prob(input_dict, ml_score, coeffs):
     critical_reasons = []
     
-    # --- GOLDEN RULE LOGIC ---
+    #Logika Golden Rule, jika value melebihi batas kritis
     
     # 1. KRISIS HIPERTENSI
     if input_dict['Sys_Raw'] >= 180:
@@ -307,14 +310,6 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
 
 # --- MAIN APP ---
 
-with st.sidebar:
-    st.header("Kontrol")
-    if st.button("Reset / Latih Ulang Model"):
-        st.cache_resource.clear()
-        if 'model_ready' in st.session_state:
-            del st.session_state['model_ready']
-        st.rerun()
-
 df_raw = load_fixed_dataset()
 
 if not df_raw.empty:
@@ -352,7 +347,7 @@ if not df_raw.empty:
             with c1:
                 p_age = st.number_input("Umur", 0, 120, 45)
                 p_hr = st.number_input("Nadi (bpm)", 30, 250, 80)
-                p_bp = st.text_input("Tekanan Darah (mmHg)", "120/80")
+                p_bp = st.text_input("Tekanan Darah Sys/Dia (mmHg)", "120/80")
             with c2:
                 p_temp = st.number_input("Suhu Tubuh (C)", 34.0, 43.0, 36.5)
                 p_o2 = st.number_input("Saturasi Oksigen (%)", 50, 100, 98)
@@ -443,17 +438,17 @@ if not df_raw.empty:
         coeffs = st.session_state.get('coef')
 
         variable_map = {
-            'Intercept': 'Intercept (Nilai Bias)',
+            'Intercept': 'Intercept',
             'ML_Score': 'Skor AI (GBM)',
-            'Sym_Dyspnea': 'Gejala Sesak',
-            'Flag_High_BP': 'Tensi Tinggi (>140/90)'
+            'Sym_Dyspnea': 'Gejala Sesak (Sym_Dyspnea)',
+            'Flag_High_BP': 'Tensi Tinggi (Flag_High_BP)'
         }
 
         with tab1:
             if metrics:
                 
                 st.markdown("---")
-                st.write("### Perbandingan Performa")
+                st.write("### Perbandingan Performa Model pada Berbagai Threshold")
                 
                 cm_def = metrics.get('cm_default')
                 cm_roc = metrics.get('cm_roc')
@@ -533,7 +528,7 @@ if not df_raw.empty:
                 df_table = df_table.dropna().sort_values(by='Bobot', ascending=False)
                 df_table.index = df_table.index.map(lambda x: variable_map.get(x, x))
                 
-                st.write("### Tabel Angka Presisi (Termasuk Intercept)")
+                st.write("### Tabel Angka Presisi Bobot Variabel")
                 st.dataframe(df_table.style.format("{:.4f}"))
 
 else:
