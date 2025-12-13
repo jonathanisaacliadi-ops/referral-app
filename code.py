@@ -17,7 +17,7 @@ import tempfile
 
 # --- 1. Konfigurasi Halaman ---
 st.set_page_config(
-    page_title="Sistem Triage Medis (Final)",
+    page_title="Sistem Triage Medis (Final Lengkap)",
     layout="wide"
 )
 
@@ -197,8 +197,6 @@ def train_medical_model(df_processed):
             'cm': confusion_matrix(y_true, y_pred)
         }
 
-
-    # Different Threshold Evaluations
     # 1. Default Threshold (0.5)
     y_pred_def = (y_prob >= 0.5).astype(int)
     m_def = calc_metrics(y_test, y_pred_def)
@@ -215,8 +213,6 @@ def train_medical_model(df_processed):
         y_pred_temp = (y_prob >= th).astype(int)
         accuracy_list.append(accuracy_score(y_test, y_pred_temp))
     
-
-
     max_acc_idx = np.argmax(accuracy_list)
     thresh_acc = thresholds[max_acc_idx]
     y_pred_acc = (y_prob >= thresh_acc).astype(int)
@@ -256,7 +252,7 @@ def train_medical_model(df_processed):
 def calculate_final_prob(input_dict, ml_score, coeffs):
     critical_reasons = []
     
-    # --- GOLDEN RULE LOGIC (Safety Check) ---
+    # --- GOLDEN RULE LOGIC ---
     
     # 1. KRISIS HIPERTENSI
     if input_dict['Sys_Raw'] >= 180:
@@ -270,11 +266,10 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     if input_dict['Temp_Raw'] >= 39.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
     if input_dict['Heart_Raw'] >= 140: critical_reasons.append("Takikardia Ekstrem (>=140 bpm)")
     
-    # Jika ada golden rule apapun, langsung vonis Rujuk 99.9%
     if critical_reasons:
         return 0.999, critical_reasons 
 
-    # --- PERHITUNGAN MODEL (Jika Lolos Golden Rule) ---
+    # --- PERHITUNGAN MODEL ---
     try:
         means = np.array(coeffs['scaler_mean'])
         scales = np.array(coeffs['scaler_scale'])
@@ -445,7 +440,7 @@ if not df_raw.empty:
         coeffs = st.session_state.get('coef')
 
         variable_map = {
-            'Intercept': 'Intercept',
+            'Intercept': 'Intercept (Nilai Bias)',
             'ML_Score': 'Skor AI (GBM)',
             'Sym_Dyspnea': 'Gejala Sesak',
             'Flag_High_BP': 'Tensi Tinggi (>140/90)'
@@ -500,23 +495,35 @@ if not df_raw.empty:
                         sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
                         st.pyplot(fig3)
 
-        # 2. Bobot Variabel
+        # --- PERBAIKAN DI SINI: MENAMPILKAN TABEL DAN INTERCEPT ---
         with tab2:
             if coeffs:
-                st.markdown("#### Bobot Variabel (Scaled)")
+                st.markdown("#### Detail Bobot Variabel")
+                
+                # 1. Tampilkan Intercept Secara Terpisah
+                intercept_val = coeffs.get('Intercept', 0)
+                st.metric("Intercept Score (Nilai Bias)", f"{intercept_val:.4f}")
+                
+                # 2. Persiapkan Data untuk Chart & Tabel
                 plot_coeffs = coeffs.copy()
-                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg']:
+                # Hapus metadata dan Intercept dari list plotting (agar skala grafik bagus)
+                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg', 'Intercept']:
                     if k in plot_coeffs: del plot_coeffs[k]
 
                 coef_df = pd.DataFrame.from_dict(plot_coeffs, orient='index', columns=['Bobot'])
                 coef_df['Bobot'] = pd.to_numeric(coef_df['Bobot'], errors='coerce')
                 coef_df = coef_df.dropna()
                 
-                plot_df = coef_df.drop('Intercept', errors='ignore')
-                plot_df.index = plot_df.index.map(lambda x: variable_map.get(x, x))
-                plot_df = plot_df.sort_values(by='Bobot', ascending=False)
+                # Mapping nama variabel agar lebih mudah dibaca
+                coef_df.index = coef_df.index.map(lambda x: variable_map.get(x, x))
+                coef_df = coef_df.sort_values(by='Bobot', ascending=False)
                 
-                st.bar_chart(plot_df)
+                # 3. Bar Chart
+                st.bar_chart(coef_df)
+                
+                # 4. Tabel Data (Dimunculkan Kembali)
+                st.write("### Tabel Angka Presisi")
+                st.dataframe(coef_df.style.format("{:.4f}"))
 
 else:
     st.error("Gagal memulai aplikasi.")
