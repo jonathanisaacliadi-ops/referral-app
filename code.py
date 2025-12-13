@@ -256,15 +256,17 @@ def calculate_final_prob(input_dict, ml_score, coeffs):
     
     # 1. KRISIS HIPERTENSI
     if input_dict['Sys_Raw'] >= 180:
-        critical_reasons.append("Krisis Hipertensi (Sistolik >= 180 mmHg) [GOLDEN RULE]")
+        critical_reasons.append("Krisis Hipertensi (Sistolik >= 180 mmHg)")
+    if input_dict['Dia_Raw'] >= 120:
+        critical_reasons.append("Krisis Hipertensi (Diastolik >= 120 mmHg)")
     
     # 2. SATURASI OKSIGEN KRITIS (Threshold <= 88)
     if input_dict['Oxygen_Raw'] <= 88: 
-        critical_reasons.append("Saturasi Oksigen Kritis (<=88%) [GOLDEN RULE]")
+        critical_reasons.append("Saturasi Oksigen Kritis (<=88%)")
         
     # 3. Tanda Vital Ekstrem Lainnya
-    if input_dict['Temp_Raw'] >= 39.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
-    if input_dict['Heart_Raw'] >= 140: critical_reasons.append("Takikardia Ekstrem (>=140 bpm)")
+    if input_dict['Temp_Raw'] >= 40.5: critical_reasons.append("Hiperpireksia (>=39.5°C)")
+    if input_dict['Heart_Raw'] >= 220 - p_age: critical_reasons.append(f"Takikardia Ekstrem (>= {220 - p_age} bpm)")
     
     if critical_reasons:
         return 0.999, critical_reasons 
@@ -330,7 +332,6 @@ if not df_raw.empty:
                 st.error("Gagal melatih model dasar.")
 
     st.title("Sistem Triage Medis")
-    st.write("Aturan Emas: O2 ≤ 88% atau Sistolik ≥ 180 mmHg = Rujuk Otomatis.")
     
     if st.session_state.get('model_ready'):
         use_gbm = st.session_state.coef.get('use_gbm', False)
@@ -382,7 +383,7 @@ if not df_raw.empty:
                 'Age': p_age, 
                 'Sys_Raw': p_sys, 'Dia_Raw': p_dia,
                 'Oxygen_Raw': p_o2, 'Temp_Raw': p_temp, 'Heart_Raw': p_hr,
-                'Flag_High_BP': 1 if (p_sys > 140 or p_dia > 90) else 0, 
+                'Flag_High_BP': 1 if (p_sys > 140 or p_dia > 90) else 0,
                 'Sym_Dyspnea': flags['Sym_Dyspnea'],
                 'Sym_Fever': flags['Sym_Fever']
             } 
@@ -425,7 +426,7 @@ if not df_raw.empty:
                     if flags['Sym_Fever']: st.warning("- Gejala Demam")
                     if s_score > 0.7: st.warning("- Pola Vital Mencurigakan (AI)")
             else:
-                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%} <= {threshold})")
+                st.success(f"TIDAK PERLU RUJUKAN (Risiko {final_prob:.1%} <= {threshold * 100}%)")
                 st.write("Kondisi stabil. Rawat jalan dengan obat simptomatik.")
                 
         elif not st.session_state.get('model_ready'):
