@@ -431,114 +431,114 @@ if not df_raw.empty:
              st.info("Silakan isi data pasien di sebelah kiri dan klik 'Analisis Keputusan'.")
 
 
-    st.markdown("---")
-    with st.expander("Detail Model & Metrik", expanded=False):
-        tab1, tab2 = st.tabs(["Performa & Metrik", "Bobot Variabel"])
+    # st.markdown("---")
+    # with st.expander("Detail Model & Metrik", expanded=False):
+    #     tab1, tab2 = st.tabs(["Performa & Metrik", "Bobot Variabel"])
         
-        metrics = st.session_state.get('metrics')
-        coeffs = st.session_state.get('coef')
+    #     metrics = st.session_state.get('metrics')
+    #     coeffs = st.session_state.get('coef')
 
-        variable_map = {
-            'Intercept': 'Intercept',
-            'ML_Score': 'Skor AI (GBM)',
-            'Sym_Dyspnea': 'Gejala Sesak (Sym_Dyspnea)',
-            'Flag_High_BP': 'Tensi Tinggi (Flag_High_BP)'
-        }
+    #     variable_map = {
+    #         'Intercept': 'Intercept',
+    #         'ML_Score': 'Skor AI (GBM)',
+    #         'Sym_Dyspnea': 'Gejala Sesak (Sym_Dyspnea)',
+    #         'Flag_High_BP': 'Tensi Tinggi (Flag_High_BP)'
+    #     }
 
-        with tab1:
-            if metrics:
+    #     with tab1:
+    #         if metrics:
                 
-                st.markdown("---")
-                st.write("### Perbandingan Performa Model pada Berbagai Threshold")
+    #             st.markdown("---")
+    #             st.write("### Perbandingan Performa Model pada Berbagai Threshold")
                 
-                cm_def = metrics.get('cm_default')
-                cm_roc = metrics.get('cm_roc')
-                cm_acc = metrics.get('cm_acc')
+    #             cm_def = metrics.get('cm_default')
+    #             cm_roc = metrics.get('cm_roc')
+    #             cm_acc = metrics.get('cm_acc')
                 
-                col_cm1, col_cm2, col_cm3 = st.columns(3)
+    #             col_cm1, col_cm2, col_cm3 = st.columns(3)
                 
-                def make_labels(cm):
-                    if cm is None: return np.array([["",""],["",""]])
-                    names = ['TN', 'FP', 'FN', 'TP']
-                    counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
-                    labels = [f"{v1}\n{v2}" for v1, v2 in zip(names, counts)]
-                    return np.asarray(labels).reshape(2,2)
+    #             def make_labels(cm):
+    #                 if cm is None: return np.array([["",""],["",""]])
+    #                 names = ['TN', 'FP', 'FN', 'TP']
+    #                 counts = ["{0:0.0f}".format(value) for value in cm.flatten()]
+    #                 labels = [f"{v1}\n{v2}" for v1, v2 in zip(names, counts)]
+    #                 return np.asarray(labels).reshape(2,2)
 
-                # --- METRIK F1, REC, PREC ---
-                with col_cm1:
-                    st.write(f"**A. Default (0.5)**")
-                    st.caption(f"Acc: {metrics.get('acc_default', 0):.2%} | Rec: {metrics.get('rec_default', 0):.2%}")
-                    st.caption(f"Prec: {metrics.get('prec_default', 0):.2%} | F1: {metrics.get('f1_default', 0):.2%}")
-                    if cm_def is not None:
-                        fig1, ax1 = plt.subplots(figsize=(3, 2.5))
-                        sns.heatmap(cm_def, annot=make_labels(cm_def), fmt='', cmap='Blues', cbar=False, ax=ax1)
-                        ax1.set_xlabel('Prediksi Model')
-                        ax1.set_ylabel('Data Aktual')
-                        st.pyplot(fig1)
+    #             # --- METRIK F1, REC, PREC ---
+    #             with col_cm1:
+    #                 st.write(f"**A. Default (0.5)**")
+    #                 st.caption(f"Acc: {metrics.get('acc_default', 0):.2%} | Rec: {metrics.get('rec_default', 0):.2%}")
+    #                 st.caption(f"Prec: {metrics.get('prec_default', 0):.2%} | F1: {metrics.get('f1_default', 0):.2%}")
+    #                 if cm_def is not None:
+    #                     fig1, ax1 = plt.subplots(figsize=(3, 2.5))
+    #                     sns.heatmap(cm_def, annot=make_labels(cm_def), fmt='', cmap='Blues', cbar=False, ax=ax1)
+    #                     ax1.set_xlabel('Prediksi Model')
+    #                     ax1.set_ylabel('Data Aktual')
+    #                     st.pyplot(fig1)
 
-                with col_cm2:
-                    st.write(f"**B. ROC Opt ({metrics.get('thresh_roc', 0):.3f})**")
-                    st.caption(f"Acc: {metrics.get('acc_roc', 0):.2%} | Rec: {metrics.get('rec_roc', 0):.2%}")
-                    st.caption(f"Prec: {metrics.get('prec_roc', 0):.2%} | F1: {metrics.get('f1_roc', 0):.2%}")
-                    if cm_roc is not None:
-                        fig2, ax2 = plt.subplots(figsize=(3, 2.5))
-                        sns.heatmap(cm_roc, annot=make_labels(cm_roc), fmt='', cmap='Purples', cbar=False, ax=ax2)
-                        ax2.set_xlabel('Prediksi Model')
-                        ax2.set_ylabel('Data Aktual')
-                        st.pyplot(fig2)
+    #             with col_cm2:
+    #                 st.write(f"**B. ROC Opt ({metrics.get('thresh_roc', 0):.3f})**")
+    #                 st.caption(f"Acc: {metrics.get('acc_roc', 0):.2%} | Rec: {metrics.get('rec_roc', 0):.2%}")
+    #                 st.caption(f"Prec: {metrics.get('prec_roc', 0):.2%} | F1: {metrics.get('f1_roc', 0):.2%}")
+    #                 if cm_roc is not None:
+    #                     fig2, ax2 = plt.subplots(figsize=(3, 2.5))
+    #                     sns.heatmap(cm_roc, annot=make_labels(cm_roc), fmt='', cmap='Purples', cbar=False, ax=ax2)
+    #                     ax2.set_xlabel('Prediksi Model')
+    #                     ax2.set_ylabel('Data Aktual')
+    #                     st.pyplot(fig2)
 
-                with col_cm3:
-                    st.write(f"**C. Max Acc ({metrics.get('thresh_acc', 0):.3f})**")
-                    st.caption(f"Acc: {metrics.get('acc_max', 0):.2%} | Rec: {metrics.get('rec_max', 0):.2%}")
-                    st.caption(f"Prec: {metrics.get('prec_max', 0):.2%} | F1: {metrics.get('f1_max', 0):.2%}")
-                    if cm_acc is not None:
-                        fig3, ax3 = plt.subplots(figsize=(3, 2.5))
-                        sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
-                        ax3.set_xlabel('Prediksi Model')
-                        ax3.set_ylabel('Data Aktual')
-                        st.pyplot(fig3)
+    #             with col_cm3:
+    #                 st.write(f"**C. Max Acc ({metrics.get('thresh_acc', 0):.3f})**")
+    #                 st.caption(f"Acc: {metrics.get('acc_max', 0):.2%} | Rec: {metrics.get('rec_max', 0):.2%}")
+    #                 st.caption(f"Prec: {metrics.get('prec_max', 0):.2%} | F1: {metrics.get('f1_max', 0):.2%}")
+    #                 if cm_acc is not None:
+    #                     fig3, ax3 = plt.subplots(figsize=(3, 2.5))
+    #                     sns.heatmap(cm_acc, annot=make_labels(cm_acc), fmt='', cmap='Greens', cbar=False, ax=ax3)
+    #                     ax3.set_xlabel('Prediksi Model')
+    #                     ax3.set_ylabel('Data Aktual')
+    #                     st.pyplot(fig3)
                 
-                st.markdown("---")
-                st.metric("Skor AUC", f"{metrics['auc']:.4f}")
-                st.write("#### Kurva ROC")
-                fig, ax = plt.subplots(figsize=(6, 4))
-                ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
-                ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
-                ax.set_title('ROC Curve')
-                ax.set_xlabel('False Positive Rate')
-                ax.set_ylabel('True Positive Rate')
-                st.pyplot(fig)
+    #             st.markdown("---")
+    #             st.metric("Skor AUC", f"{metrics['auc']:.4f}")
+    #             st.write("#### Kurva ROC")
+    #             fig, ax = plt.subplots(figsize=(6, 4))
+    #             ax.plot(metrics['fpr'], metrics['tpr'], color='blue', lw=2, label='ROC curve')
+    #             ax.plot([0, 1], [0, 1], color='gray', linestyle='--')
+    #             ax.set_title('ROC Curve')
+    #             ax.set_xlabel('False Positive Rate')
+    #             ax.set_ylabel('True Positive Rate')
+    #             st.pyplot(fig)
 
-        # --- TABEL DAN INTERCEPT ---
-        with tab2:
-            if coeffs:
-                st.markdown("#### Detail Bobot Variabel")
+    #     # --- TABEL DAN INTERCEPT ---
+    #     with tab2:
+    #         if coeffs:
+    #             st.markdown("#### Detail Bobot Variabel")
                 
-                plot_data = coeffs.copy()
-                table_data = coeffs.copy()
+    #             plot_data = coeffs.copy()
+    #             table_data = coeffs.copy()
                 
-                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg', 'Intercept']:
-                    if k in plot_data: del plot_data[k]
+    #             for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg', 'Intercept']:
+    #                 if k in plot_data: del plot_data[k]
                 
-                for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg']:
-                    if k in table_data: del table_data[k]
+    #             for k in ['scaler_mean', 'scaler_scale', 'scaler_cols', 'use_gbm', 'error_msg']:
+    #                 if k in table_data: del table_data[k]
 
-                # Plot
-                df_plot = pd.DataFrame.from_dict(plot_data, orient='index', columns=['Bobot'])
-                df_plot['Bobot'] = pd.to_numeric(df_plot['Bobot'], errors='coerce')
-                df_plot = df_plot.dropna().sort_values(by='Bobot', ascending=False)
-                df_plot.index = df_plot.index.map(lambda x: variable_map.get(x, x))
-                st.bar_chart(df_plot)
+    #             # Plot
+    #             df_plot = pd.DataFrame.from_dict(plot_data, orient='index', columns=['Bobot'])
+    #             df_plot['Bobot'] = pd.to_numeric(df_plot['Bobot'], errors='coerce')
+    #             df_plot = df_plot.dropna().sort_values(by='Bobot', ascending=False)
+    #             df_plot.index = df_plot.index.map(lambda x: variable_map.get(x, x))
+    #             st.bar_chart(df_plot)
                 
 
-                # Tabel
-                df_table = pd.DataFrame.from_dict(table_data, orient='index', columns=['Bobot'])
-                df_table['Bobot'] = pd.to_numeric(df_table['Bobot'], errors='coerce')
-                df_table = df_table.dropna().sort_values(by='Bobot', ascending=False)
-                df_table.index = df_table.index.map(lambda x: variable_map.get(x, x))
+    #             # Tabel
+    #             df_table = pd.DataFrame.from_dict(table_data, orient='index', columns=['Bobot'])
+    #             df_table['Bobot'] = pd.to_numeric(df_table['Bobot'], errors='coerce')
+    #             df_table = df_table.dropna().sort_values(by='Bobot', ascending=False)
+    #             df_table.index = df_table.index.map(lambda x: variable_map.get(x, x))
                 
-                st.write("### Tabel Angka Presisi Bobot Variabel")
-                st.dataframe(df_table.style.format("{:.4f}"))
+    #             st.write("### Tabel Angka Presisi Bobot Variabel")
+    #             st.dataframe(df_table.style.format("{:.4f}"))
 
 else:
     st.error("Gagal memulai aplikasi.")
